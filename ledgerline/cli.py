@@ -18,11 +18,14 @@ Records:
     ledgerline runs                      the log of past scans and fetches
     ledgerline restatements              figures that companies later revised
     ledgerline provenance AAPL           which SEC filings a reading came from
+    ledgerline signals                   every saved assessment, kept verbatim
+                                         and permanently
     ledgerline peers                     which companies have industry peers
                                          to compare against (measured, unused)
 
 Research (the validation experiment; most are one-shot):
-    build-cases, periods, split, commit-rule, calibrate, run-test, phase0-freeze
+    build-cases, periods, split, commit-rule, calibrate, run-test,
+    phase0-freeze, replay
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ from datetime import date
 
 import typer
 
-from . import backtest, edgar, ingest, render, restate, signals_v3
+from . import backtest, edgar, emit, ingest, render, restate, signals_v3
 from . import calibrate as calib
 from . import coverage as cov
 from . import peers as peer_mod
@@ -351,7 +354,13 @@ def explain(ticker: str,
 
 @app.command()
 def score(ticker: str, as_of: str = typer.Option(None, help="YYYY-MM-DD; uses only "
-                                                 "figures filed by this date.")):
+                                                 "figures filed by this date."),
+          save: bool = typer.Option(False, "--emit/--no-emit",
+                                    help="Also save this assessment to the "
+                                         "permanent record that `ledgerline "
+                                         "signals` reads. Saved entries can "
+                                         "never be edited or deleted, only "
+                                         "added to.")):
     """One company, one date, as machine-readable JSON.
 
     For the human-readable version run `ledgerline explain TICKER`.
@@ -364,9 +373,13 @@ def score(ticker: str, as_of: str = typer.Option(None, help="YYYY-MM-DD; uses on
     # Banner to stderr so the JSON on stdout stays pipeable; the stamp travels
     # inside the JSON so a piped consumer cannot lose the verdict.
     typer.echo(phase0.banner(), err=True)
-    typer.echo(json.dumps(phase0.stamp(signals_v3.evaluate(ticker.upper(), cik,
-                                                           as_of=as_of)),
-                          indent=2))
+    res = phase0.stamp(signals_v3.evaluate(ticker.upper(), cik, as_of=as_of))
+    if save:
+        emit.emit(res, source="score", run_date=date.today().isoformat())
+        typer.echo("Saved to the permanent record (ledgerline signals shows "
+                   "it; saving the same assessment twice records nothing "
+                   "new).", err=True)
+    typer.echo(json.dumps(res, indent=2))
 
 
 @app.command()
@@ -549,6 +562,74 @@ def provenance(ticker: str,
                "subtracted out.")
 
 
+@app.command("signals")
+def signals_cmd(ticker: str = typer.Option(None, help="One company's saved "
+                                                      "assessments only."),
+                since: str = typer.Option(None, help="Only assessments made as "
+                                                     "of this date (YYYY-MM-DD) "
+                                                     "or later."),
+                gated_in: bool = typer.Option(False, "--gated-in",
+                                              help="Only assessments that "
+                                                   "flagged the company."),
+                gate_version: str = typer.Option(None, help="Only assessments "
+                                                 "made by one exact version of "
+                                                 "the detector (--json shows "
+                                                 "each entry's version)."),
+                limit: int = typer.Option(50, help="How many entries to show, "
+                                                   "newest first."),
+                as_json: bool = typer.Option(False, "--json",
+                                             help="Full machine-readable "
+                                                  "entries instead of "
+                                                  "sentences.")):
+    """Every saved assessment, exactly as it was made at the time.
+
+    Entries are added by `ledgerline scan --score`, `ledgerline score TICKER
+    --emit` and `ledgerline replay`; nothing can edit or delete one. Each entry
+    keeps the verdict, the measures behind it, the SEC filings it traces to,
+    and the version of the detector that made it -- so a change to the
+    detector can later be compared against what the old one actually said.
+    Companies that could NOT be assessed are entries too, with the reason:
+    without them, "how often was it wrong" has no denominator.
+    """
+    rows = emit.load_signals(ticker=ticker, since=since,
+                             gated_in=True if gated_in else None,
+                             gate_version=gate_version, limit=limit)
+    if as_json:
+        typer.echo(phase0.banner(), err=True)
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    typer.echo(phase0.banner())
+    typer.echo("")
+    if not rows:
+        typer.echo("No saved assessments match. They are added by "
+                   "`ledgerline scan --score`, `ledgerline score TICKER "
+                   "--emit`, or `ledgerline replay`.")
+        return
+    for r in rows:
+        day, tick = r["as_of"], (r["ticker"] or r["cik"])
+        if not r["scoreable"]:
+            typer.echo(f"  {day}  {tick:6} cannot assess -- "
+                       f"{render.plain_reason(r['reason'])}")
+            continue
+        mark = "FLAGGED    " if r["gated_in"] else "not flagged"
+        names = ", ".join(render.PLAIN.get(f["code"].lower(), (f["code"],))[0]
+                          for f in r["flags"])
+        typer.echo(f"  {day}  {tick:6} {mark} scored {r['score']:5.1f} of 100"
+                   + (f"  ({names})" if names else ""))
+    n_flag = sum(1 for r in rows if r["gated_in"])
+    n_no = sum(1 for r in rows if not r["scoreable"])
+    typer.echo(f"\n{len(rows)} entr{'y' if len(rows) == 1 else 'ies'} shown, "
+               f"newest first: {n_flag} flagged, {n_no} could not be "
+               "assessed. Full detail, including which SEC filings each "
+               "entry traces to: --json.")
+    versions = {r["gate_version"] for r in rows}
+    if len(versions) > 1:
+        typer.echo(f"These entries were made by {len(versions)} different "
+                   "versions of the detector. Scores from different versions "
+                   "must not be averaged together (--json shows each "
+                   "entry's version).")
+
+
 # ------------------------------------------------------- research / experiment
 
 
@@ -683,6 +764,65 @@ def run_test(split: str = "tuning", start_year: int = 2005, end_year: int = 2025
         fired = sum(1 for o in report["outcomes"] if o["fired"])
         typer.echo(f"practice half: {fired} of {len(report['outcomes'])} "
                    "companies flagged at least once")
+
+
+@app.command()
+def replay(split: str = typer.Option("tuning", help="Which half of the cases "
+                                     "to replay. Only 'tuning' (the practice "
+                                     "half) is allowed."),
+           start_year: int = typer.Option(2005, help="First year of quarterly "
+                                                     "checkpoints."),
+           end_year: int = typer.Option(2025, help="Last year of quarterly "
+                                                   "checkpoints.")):
+    """Re-assess every practice-half company at every past quarterly checkpoint
+    and save each result to the permanent record, so a future revision of the
+    detector has a history to be compared against instead of zero rows.
+
+    Prints row counts only -- never a hit rate or an alarm rate. Judging the
+    detector's performance is what the one-shot sealed test was for, and that
+    already happened. Safe to re-run: an assessment already on record is
+    recognised and skipped, not duplicated.
+    """
+    if split != "tuning":
+        typer.echo("replay works on the practice half only ('tuning'). The "
+                   "sealed test half was scored exactly once, on 2026-08-30, "
+                   "and that one measurement is only meaningful while it "
+                   "stays the only one -- re-assessing those companies, even "
+                   "quietly into a database table, would be a second look. "
+                   "The tool refuses, and there is no override flag.")
+        raise typer.Exit(2)
+    # The results being saved are scores, so the failed-test banner leads.
+    typer.echo(phase0.banner())
+    typer.echo("")
+    cases = harness.load_split("tuning")
+    cutoffs = backtest.quarterly_cutoffs(start_year, end_year)
+    typer.echo(f"Re-assessing {len(cases)} practice-half companies at "
+               f"{len(cutoffs)} quarterly checkpoints "
+               f"({cutoffs[0]} .. {cutoffs[-1]}). Companies that cannot be "
+               "assessed at a checkpoint are recorded too, with the reason.")
+    norms = {c.cik: edgar.normalize(c.cik) for c in cases}
+    written = already = 0
+    conn = edgar.db()
+    try:
+        for i, cutoff in enumerate(cutoffs, 1):
+            # One emit per checkpoint, AFTER every company is evaluated at it:
+            # each saved entry carries that checkpoint's full denominator.
+            verdicts = [signals_v3.evaluate(c.ticker, c.cik, as_of=cutoff,
+                                            norm=norms[c.cik]) for c in cases]
+            out = emit.emit_run(verdicts, source="replay", run_date=cutoff,
+                                split="tuning", conn=conn)
+            written += out["written"]
+            already += out["already"]
+            if i % 8 == 0 or i == len(cutoffs):
+                typer.echo(f"  {i}/{len(cutoffs)} checkpoints done; "
+                           f"{written} new entries saved so far")
+    finally:
+        conn.close()
+    typer.echo(f"\nSaved {written} new assessment"
+               f"{'s' if written != 1 else ''} to the permanent record; "
+               f"{already} {'was' if already == 1 else 'were'} already there "
+               "and left untouched. Row counts only -- this command never "
+               "reports performance. Browse them: ledgerline signals")
 
 
 # -------------------------------------------------- old names, kept working

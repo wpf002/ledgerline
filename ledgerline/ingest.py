@@ -41,7 +41,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from . import edgar, restate, signals_v3
+from . import edgar, emit, restate, signals_v3
 
 
 @dataclass
@@ -244,6 +244,16 @@ def scan(days_back: int = 1, as_of: str | None = None, score: bool = False,
                 if res["scoreable"]:
                     c.scored += 1
                     c.gated_in += int(res["gated_in"])
+
+        # Persist AFTER the loop, never inside it: the run block embedded in
+        # every stored record carries the day's denominators (how many filers
+        # were evaluated, how many could not be assessed and why), and those
+        # are not complete until every filer has been evaluated. Unscoreable
+        # verdicts are persisted too -- the denominator travels with the
+        # numerator.
+        if score and results:
+            emit.emit_run(results, source="scan", run_id=run_id,
+                          run_date=cutoff)
 
         return {"run_id": run_id, "as_of": cutoff, "hits": len(hits),
                 "index_rows": c.index_rows, "filers": filers,

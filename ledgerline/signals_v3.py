@@ -69,7 +69,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from statistics import median
 
-from . import edgar, provenance, reasons, status
+from . import derive, edgar, provenance, reasons, status
 from .signals import Diagnostics, diagnose, series
 
 # Which arithmetic produced a score. "3.0.0" is the gate exactly as frozen for
@@ -190,6 +190,56 @@ MIN_SCOREABLE_WEIGHT = THRESHOLD / 100 * SCORE_DIVISOR / Z_CAP
 # how much of the diagnostic set a filer was actually judged on.
 WEIGHT_TOTAL = sum(w for _, w, _ in TRACKED.values())
 
+# How many trailing period ends per metric count as the CURRENT reading's
+# evidence. Five because a TTM window is four quarters and a YoY comparison
+# reaches five. Deliberately the reading's evidence, not the 20-quarter
+# baseline's: the baseline is reproducible from gate_version + as_of + the
+# immutable fact cache, whereas the reading is what a reader is asked to
+# believe.
+EVIDENCE_QUARTERS = 5
+
+
+def gate_fingerprint() -> dict:
+    """Every constant that can change a score, as one ordered dict.
+
+    The persistence layer hashes this into the gate_version written on every
+    stored signal; without it a retune silently interleaves two different
+    gates in one track record and any later comparison measures a blend.
+    Rule for whoever edits this module next: if a constant can change a
+    score, it belongs in this dict.
+    """
+    return {
+        "tracked": {
+            name: {"direction": d, "weight": w, "scale_floor": f}
+            for name, (d, w, f) in TRACKED.items()
+        },
+        "z_trigger": Z_TRIGGER,
+        "threshold": THRESHOLD,
+        "score_divisor": SCORE_DIVISOR,
+        "z_cap": Z_CAP,
+        "min_flags": MIN_FLAGS,
+        "min_history": MIN_HISTORY,
+        "min_baseline_n": MIN_BASELINE_N,
+        "max_baseline": MAX_BASELINE,
+        "required_coverage": list(REQUIRED_COVERAGE),
+        "coverage_min": derive.COVERAGE_MIN,
+    }
+
+
+def evidence_accessions(snap: dict, quarters: int = EVIDENCE_QUARTERS) -> list[str]:
+    """The accessions behind the current reading: union of `sources` over each
+    metric's last `quarters` period ends in the truncated snapshot, deduped
+    and sorted. Populated on every path where a snapshot exists -- including
+    abstentions, because "why was this filer not scoreable" is a claim that
+    also has to trace to filings."""
+    accs: set[str] = set()
+    for rows in snap.values():
+        ends = sorted({r.get("end") for r in rows if r.get("end")})[-quarters:]
+        for r in rows:
+            if r.get("end") in ends:
+                accs.update(s for s in r.get("sources", []) if s)
+    return sorted(accs)
+
 
 @dataclass
 class ZFlag:
@@ -253,8 +303,10 @@ class Verdict:
     #   evaluated_weight/weight_total  how much of the diagnostic set this
     #                   filer was actually judged on -- the scale compression
     #                   that made THRESHOLD mean something different per filer.
-    #   accessions      reserved for the persistence layer (the signal store's
-    #                   NOT NULL trace column); empty until that layer fills it.
+    #   accessions      the current reading's evidence (evidence_accessions),
+    #                   populated on every path where a snapshot exists. The
+    #                   signal store's NOT NULL trace column reads this, and
+    #                   emit() refuses a scoreable verdict where it is empty.
     gate_version: str = GATE_VERSION
     reason_code: str | None = None
     abstentions: dict = field(default_factory=dict)
@@ -381,18 +433,23 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
                     reason_code=reasons.NO_XBRL_FACTS).as_dict())
 
     snap = edgar.as_of(full, cutoff)
+    # The trace travels on every verdict a snapshot exists for, abstentions
+    # included -- the persisted record outlives the fact cache, so the claim
+    # "could not assess" has to cite filings the same way a score does.
+    accs = evidence_accessions(snap)
     if not snap.get("revenue"):
         return status.stamp(
             Verdict(ticker, cik, cutoff, scoreable=False,
                     reason="no revenue facts filed as of cutoff",
-                    reason_code=reasons.NO_REVENUE_AT_CUTOFF).as_dict())
+                    reason_code=reasons.NO_REVENUE_AT_CUTOFF,
+                    accessions=accs).as_dict())
 
     ok, reason, cov = _coverage_gate(snap)
     if not ok:
         return status.stamp(
             Verdict(ticker, cik, cutoff, scoreable=False, reason=reason,
                     reason_code=reasons.REQUIRED_COVERAGE_LOW,
-                    coverage=cov).as_dict())
+                    coverage=cov, accessions=accs).as_dict())
 
     current = diagnose(ticker, cik, snap)
     hist = _history(ticker, cik, full, cutoff)
@@ -402,7 +459,7 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
                     reason=f"insufficient own-history ({len(hist)}q of {MIN_HISTORY})",
                     reason_code=reasons.SHORT_HISTORY,
                     coverage=cov, derived_fraction=current.derived_fraction,
-                    diagnostics=current.as_dict()).as_dict())
+                    diagnostics=current.as_dict(), accessions=accs).as_dict())
 
     flags: list[ZFlag] = []
     all_z: dict[str, float] = {}
@@ -491,7 +548,8 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
                     coverage=cov, derived_fraction=current.derived_fraction,
                     diagnostics=current.as_dict(), z=all_z,
                     abstentions=abstentions, abstention_detail=abstention_detail,
-                    evaluated_weight=evaluated_weight).as_dict())
+                    evaluated_weight=evaluated_weight,
+                    accessions=accs).as_dict())
 
     raw = sum(f.weight * min(f.z / Z_TRIGGER, Z_CAP) for f in flags)
     score = round(min(raw / SCORE_DIVISOR * 100, 100), 1)
@@ -512,6 +570,7 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         abstentions=abstentions,
         abstention_detail=abstention_detail,
         evaluated_weight=evaluated_weight,
+        accessions=accs,
     )
     # The README invariant, enforced at the scoring surface: a fired flag that
     # cannot cite a filing makes the reading UNTRACED and the gate abstains

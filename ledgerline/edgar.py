@@ -340,6 +340,67 @@ CREATE TABLE IF NOT EXISTS scoreability (
     computed_at         TEXT,
     PRIMARY KEY (cik, as_of)
 );
+-- The signal store (Phase 3). EVERY evaluation is persisted -- fires, quiet
+-- scoreable quarters, and unscoreable filers with their reason. A fires-only
+-- store has no denominator: it can measure precision and can never measure
+-- recall, and recall (0.287 against a required 0.60) is what Phase 0 failed
+-- on. signal_id is content-addressed (sha256 over cik, as_of, gate_version,
+-- score, gated_in, scoreable, reason, flags, z), so a replay is idempotent
+-- while the same (cik, as_of) under a CHANGED gate writes a SECOND row beside
+-- the first -- that coexistence is the entire mechanism by which a revised
+-- gate is ever compared to the one that returned KILL. score is NULL when
+-- scoreable = 0, never 0.0: FINDINGS §3's defect was that 0.0 is
+-- indistinguishable from "assessed, looks clean", and that mistake must not
+-- be re-made at the delivery boundary. accessions is NOT NULL because the
+-- README invariant is "a score traces back to accessions or it does not
+-- ship", and the persisted record outlives the fact cache, so this is the
+-- last place it can be enforced. Writer: ledgerline/emit.py, nothing else.
+CREATE TABLE IF NOT EXISTS signals (
+    signal_id        TEXT PRIMARY KEY,
+    seq              INTEGER NOT NULL,
+    schema_version   TEXT NOT NULL,
+    cik              TEXT NOT NULL,
+    ticker           TEXT,
+    as_of            TEXT NOT NULL,
+    period           TEXT,
+    emitted_at       TEXT NOT NULL,
+    run_id           TEXT,
+    source           TEXT NOT NULL,       -- scan | score | emit | replay
+    split            TEXT,
+    score            REAL,                -- NULL when scoreable = 0
+    gated_in         INTEGER NOT NULL,
+    scoreable        INTEGER NOT NULL,
+    reason           TEXT,
+    reason_code      TEXT,
+    n_flags          INTEGER NOT NULL DEFAULT 0,
+    flags            TEXT NOT NULL,
+    z                TEXT NOT NULL,
+    abstentions      TEXT NOT NULL,
+    evaluated_weight REAL,
+    weight_total     REAL,
+    accessions       TEXT NOT NULL,
+    coverage_failed  TEXT NOT NULL,
+    derived_fraction REAL,
+    gate_version     TEXT NOT NULL,
+    validation_status TEXT NOT NULL,
+    record           TEXT NOT NULL        -- full payload + embedded run block
+);
+CREATE UNIQUE INDEX IF NOT EXISTS signals_seq ON signals (seq);
+CREATE INDEX IF NOT EXISTS signals_cik_asof ON signals (cik, as_of);
+CREATE INDEX IF NOT EXISTS signals_gate ON signals (gate_version, as_of);
+CREATE INDEX IF NOT EXISTS signals_run ON signals (run_id);
+-- The append-only invariant, enforced rather than stated: prose is not an
+-- invariant, RAISE(ABORT) is. These triggers are why the writer uses INSERT
+-- OR IGNORE and never OR REPLACE -- OR REPLACE would fire the delete trigger
+-- and abort, which is correct.
+CREATE TRIGGER IF NOT EXISTS signals_no_update
+BEFORE UPDATE ON signals BEGIN
+    SELECT RAISE(ABORT, 'signals is append-only: emit a new signal, do not edit');
+END;
+CREATE TRIGGER IF NOT EXISTS signals_no_delete
+BEFORE DELETE ON signals BEGIN
+    SELECT RAISE(ABORT, 'signals is append-only: emit a new signal, do not delete');
+END;
 """
 
 # Migrations, ordered and carried on PRAGMA user_version. CREATE TABLE IF NOT

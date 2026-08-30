@@ -185,7 +185,11 @@ def _verdict(score=50.0, gated=True):
     return {"ticker": "T", "cik": "0000000001", "as_of": "2026-08-30",
             "period": "2026-06-30", "score": score, "gated_in": gated,
             "scoreable": True, "reason": None, "flags": [], "coverage": {},
-            "derived_fraction": 0.0, "diagnostics": {}, "z": {}}
+            "derived_fraction": 0.0, "diagnostics": {}, "z": {},
+            # The signal store refuses a scoreable verdict with no accession
+            # trace, and scan --score now persists what it prints -- so even
+            # a stubbed verdict must carry its evidence.
+            "accessions": ["acc-1"]}
 
 
 def _watch_one(monkeypatch):
@@ -199,7 +203,7 @@ def test_score_command_stamps_the_json_and_keeps_stdout_pipeable(
     travels inside the JSON so a piped consumer cannot lose the verdict."""
     _watch_one(monkeypatch)
     monkeypatch.setattr(signals_v3, "evaluate", lambda *a, **k: _verdict())
-    cli.score("T", as_of=None)
+    cli.score("T", as_of=None, save=False)
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     status.assert_stamped(payload)

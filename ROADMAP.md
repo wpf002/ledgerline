@@ -11,6 +11,33 @@ Everything from the audit through ship, in order.
 **Phase 0 is a gate, not a milestone.** If it fails, nothing after it gets
 built. The kill condition is committed before the test runs.
 
+> ## PHASE 0 RESULT: KILL (2026-08-30)
+>
+> The holdout was scored once, against `data/prereg.json` committed at
+> `3bdba2fd784dc066` and the split committed at `5c12ce5412c4d7e1…`.
+> Two of six pre-registered criteria failed.
+>
+> | criterion | holdout | required | |
+> |---|---|---|---|
+> | false-positive rate / control quarter | 0.0383 | ≤ 0.04 | pass |
+> | median lead | 9 months | ≥ 6 | pass |
+> | **positive hit rate** | **0.287** | **≥ 0.60** | **FAIL** |
+> | regimes detected in | 6 of 6 | ≥ 4 | pass |
+> | sample size | 178 pos / 209 ctrl | 40 / 200 | pass |
+> | **beats naive baseline** | **0.0383 vs 0.0051** | strictly below | **FAIL** |
+>
+> Per the pre-registration, the deterministic gate is not a viable product
+> core and Phases 1–7 are not built. **Do not retune and re-run against this
+> holdout.** Full write-up in `reports/PHASE0.md`.
+>
+> What did NOT go wrong, because it matters for whatever comes next: the
+> holdout scored *better* than the tuning split it was fitted on (0.287 vs
+> 0.212 hit rate, 9 vs 6 months lead), so there is no overfitting; the gate
+> detected in all six regimes including `2017-19-idiosyncratic`, so it is not
+> a beta detector; and the ingestion and point-in-time layers held up under
+> adversarial audit. The gate finds real deterioration — it just finds too
+> little of it, and it is noisier than a two-line rule.
+
 Status: **74 tests passing**, no network required. Fixtures are synthetic
 XBRL-shaped payloads; each test reproduces a specific documented bug or
 enforces a specific decision.

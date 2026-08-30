@@ -1,2 +1,12 @@
+# state.db and the EDGAR cache are derived data and do not belong in git.
 *
 !.gitignore
+
+# These two DO. The whole Phase 0 methodology rests on the split and the
+# decision rule being committed BEFORE the holdout is scored -- a
+# pre-registration that lives only on the machine that ran the test is not a
+# pre-registration. bootstrap.sh's blanket ignore would have kept both
+# untracked, which would have quietly voided the commitment.
+!split.json
+!prereg.json
+!cases.json

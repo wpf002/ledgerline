@@ -33,8 +33,16 @@ touch ledgerline/__init__.py \
 
 # data/ holds the sqlite state + the immutable EDGAR cache; neither belongs in git
 cat > ledgerline/data/.gitignore <<'EOF'
+# state.db and the EDGAR cache are derived data and do not belong in git.
 *
 !.gitignore
+
+# These DO. The Phase 0 methodology rests on the split and the decision rule
+# being committed BEFORE the holdout is scored -- a pre-registration that lives
+# only on the machine that ran the test is not a pre-registration.
+!split.json
+!prereg.json
+!cases.json
 EOF
 
 # ---------------------------------------------------------------- packaging

@@ -109,7 +109,39 @@ def collect_vintages(rows: list[dict], key) -> dict:
     return out
 
 
-def derive_quarterly(rows: list[dict]) -> list[dict]:
+def same_basis(cum: dict, prior: dict, cum_vints: list[dict],
+               prior_vints: list[dict]) -> bool:
+    """Are these two cumulatives measuring the same thing?
+
+    Q4 = FY - 9M is only arithmetic if both cumulatives describe the same
+    reporting entity and the same continuing/discontinued split. When a filer
+    restates ONE of them and not the other, differencing them subtracts two
+    different companies.
+
+    DLTR, fiscal year starting 2022-01-30:
+        9M  20,602M  filed 2022-11-22   (never restated)
+        FY  28,318M  filed 2023-03-10
+        FY  15,406M  filed 2025-03-26   (Family Dollar -> discontinued ops)
+    At the 2025 vintage date the old code paired the restated FY with the
+    original 9M and emitted Q4 = -5,196,300,000. Negative revenue, carrying a
+    legitimate `filed` date, so as_of() correctly served it forever after. It
+    made DLTR a labeled positive in a quarter its revenue actually grew.
+
+    Rule: whichever side has been restated, the other must have been restated
+    at or after that date too. An original-vs-original pair is always fine even
+    though their filing dates differ -- the FY figure simply lands months after
+    the 9M one, which is not a restatement.
+    """
+    cum_restated = cum is not cum_vints[0]
+    prior_restated = prior is not prior_vints[0]
+    cum_f = cum.get("filed") or ""
+    prior_f = prior.get("filed") or ""
+    if cum_restated and prior_f < cum_f:
+        return False
+    return not (prior_restated and cum_f < prior_f)
+
+
+def derive_quarterly(rows: list[dict], non_negative: bool = False) -> list[dict]:
     """Raw duration facts for one metric -> a contiguous quarterly series,
     every period end carrying its full vintage history.
 
@@ -166,16 +198,25 @@ def derive_quarterly(rows: list[dict]) -> list[dict]:
 
         # A derived quarter is public once BOTH inputs are, and it CHANGES
         # whenever either input is restated -- so it has a vintage at every
-        # date either side moved.
+        # date either side moved. But only where the two are on the SAME
+        # reporting basis; see same_basis().
         for d in sorted({v.get("filed") or "" for v in vints}
                         | {p.get("filed") or "" for p in prior_vints}):
             cum, prior = newest_at(vints, d), newest_at(prior_vints, d)
             if cum is None or prior is None:
                 continue
+            if not same_basis(cum, prior, vints, prior_vints):
+                continue
+            value = cum["value"] - prior["value"]
+            if non_negative and value < 0:
+                # A quantity that cannot be negative coming out negative means
+                # the inputs disagreed in a way same_basis() did not catch.
+                # Refuse rather than emit it -- "no wrong numbers".
+                continue
             offer(
                 _row(
                     cum,
-                    cum["value"] - prior["value"],
+                    value,
                     q_start=prior["end"],
                     origin="derived",
                     bucket=bucket,

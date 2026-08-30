@@ -84,6 +84,47 @@ LABELS = {
 # Metrics whose absence makes the filer unscoreable rather than partially scored.
 REQUIRED_COVERAGE = ("revenue", "operating_cash_flow", "net_income")
 
+# Which coverage-gated metrics each diagnostic actually consumes. A metric that
+# coverage_report() marks scoreable=False must not silently produce a
+# diagnostic value: FTI at cutoff 2020-08-15 had cost_of_revenue coverage of
+# 56%, and dio was computed anyway from a 2020 inventory balance over a 2018
+# COGS window. The old gate only enforced REQUIRED_COVERAGE, so a filer failing
+# on any other metric was still scored on it.
+DIAGNOSTIC_INPUTS: dict[str, tuple[str, ...]] = {
+    "cash_conversion_gap":     ("revenue", "operating_cash_flow"),
+    "accrual_ratio":           ("net_income", "operating_cash_flow"),
+    "receivables_vs_revenue":  ("revenue",),
+    "inventory_vs_revenue":    ("revenue",),
+    "dso":                     ("revenue",),
+    "dio":                     ("cost_of_revenue",),
+    "deferred_vs_revenue_gap": ("revenue",),
+    "revenue_accel":           ("revenue",),
+    "gross_margin":            ("revenue", "gross_profit", "cost_of_revenue"),
+    "op_margin":               ("revenue", "operating_income"),
+    "ocf_to_revenue":          ("revenue", "operating_cash_flow"),
+    "net_debt_to_ttm_ocf":     ("operating_cash_flow",),
+    "dilution_yoy":            ("diluted_shares",),
+}
+
+
+def _uncovered(name: str, cov: dict) -> bool:
+    """True if any metric this diagnostic consumes failed its coverage check.
+
+    gross_margin is special-cased: it needs revenue plus EITHER gross_profit or
+    cost_of_revenue, so one of the two being sparse is not disqualifying.
+    """
+    inputs = DIAGNOSTIC_INPUTS.get(name, ())
+    if name == "gross_margin":
+        if cov.get("revenue", {}).get("scoreable") is False:
+            return True
+        alts = [cov.get(m, {}) for m in ("gross_profit", "cost_of_revenue")]
+        return all(a.get("n") and not a.get("scoreable") for a in alts) if any(
+            a.get("n") for a in alts
+        ) else False
+    return any(
+        cov.get(m, {}).get("n") and not cov.get(m, {}).get("scoreable") for m in inputs
+    )
+
 MIN_HISTORY = 12       # quarters of own history before a filer is scoreable
 MIN_BASELINE_N = 8     # non-null observations required per diagnostic
 MAX_BASELINE = 20      # cap the lookback so the baseline tracks the business
@@ -91,6 +132,12 @@ Z_TRIGGER = 2.0        # UNCALIBRATED -- see module docstring
 THRESHOLD = 45.0       # UNCALIBRATED -- see module docstring
 SCORE_DIVISOR = 8.0    # UNCALIBRATED -- see module docstring
 Z_CAP = 2.5            # a 10-sigma print should not outvote breadth
+# Z_CAP was supposed to make a single extreme print unable to fire on its own,
+# but it does not: the heaviest weight is 2.0, so one flag reaches
+# 2.0 * 2.5 / 8.0 * 100 = 62.5, comfortably past THRESHOLD = 45. Breadth is now
+# an explicit condition rather than an emergent property of three constants
+# that Phase 0f is going to refit anyway. Pinned by a test.
+MIN_FLAGS = 2          # distinct diagnostics that must fire together
 
 
 @dataclass
@@ -230,6 +277,8 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         cur = getattr(current, name)
         if cur is None:
             continue
+        if _uncovered(name, cov):
+            continue
         baseline = [v for v in (getattr(h, name) for h in hist) if v is not None]
         res = robust_z(cur, baseline, floor)
         if res is None:
@@ -268,7 +317,7 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         as_of=cutoff,
         period=current.period,
         score=score,
-        gated_in=score >= THRESHOLD,
+        gated_in=score >= THRESHOLD and len(flags) >= MIN_FLAGS,
         scoreable=True,
         coverage=cov,
         derived_fraction=current.derived_fraction,

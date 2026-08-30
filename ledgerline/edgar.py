@@ -420,8 +420,20 @@ FLOW_METRICS = {
     "operating_cash_flow",
     "capex",
     "impairment",
-    "diluted_shares",
 }
+
+# Quantities that cannot be negative. If differencing two cumulatives produces
+# a negative one, the inputs disagreed and the result is refused rather than
+# emitted -- see derive.same_basis and the "no wrong numbers" invariant.
+NON_NEGATIVE_FLOWS = {"revenue", "cost_of_revenue"}
+
+# A weighted-average share count is NOT additive across periods: Q4 is not
+# FY minus 9M. Differencing it produced 266 negative share counts across 40
+# cached filers (GPK Q4-2012 = -1,300,000 against ~397M reported), and
+# dilution_yoy then read a ratio of two garbage numbers as a plausible 23%
+# buyback that the corporate-action guard could not catch. Weighted averages
+# take the duration fact closest to a single quarter and nothing else.
+AVERAGED_FLOWS = {"diluted_shares"}
 
 ACCEPTED_FORMS = ("10-K", "10-Q", "20-F", "10-K/A", "10-Q/A")
 
@@ -488,6 +500,24 @@ def _pit_rows(rows: list[dict]) -> list[dict]:
             {**r, "kind": "PIT", "origin": "reported", "sources": [r.get("accession")]}
             for r in seq[end]
         ]
+        out.append({**vints[-1], "vintages": vints})
+    return out
+
+
+def _quarter_only_rows(rows: list[dict]) -> list[dict]:
+    """Duration facts that are already a single quarter, with vintages.
+
+    For non-additive quantities (weighted-average share counts). A period that
+    the filer only ever reported cumulatively simply has no quarterly value,
+    and the diagnostic that needs it returns None.
+    """
+    q = [r for r in rows
+         if r.get("start") and derive.classify(r["start"], r["end"]) == "Q"]
+    seq = derive.collect_vintages(q, key=lambda r: r["end"])
+    out = []
+    for end in sorted(seq):
+        vints = [{**r, "kind": "Q", "origin": "reported", "sources": [r.get("accession")]}
+                 for r in seq[end]]
         out.append({**vints[-1], "vintages": vints})
     return out
 
@@ -578,7 +608,14 @@ def normalize(cik: str, facts: dict | None = None) -> dict[str, list[dict]]:
         rows = _raw_rows(facts, metric, concepts)
         if not rows:
             continue
-        result = derive.derive_quarterly(rows) if metric in FLOW_METRICS else _pit_rows(rows)
+        if metric in FLOW_METRICS:
+            result = derive.derive_quarterly(
+                rows, non_negative=metric in NON_NEGATIVE_FLOWS
+            )
+        elif metric in AVERAGED_FLOWS:
+            result = _quarter_only_rows(rows)
+        else:
+            result = _pit_rows(rows)
         if result:
             out[metric] = result
 
@@ -633,7 +670,7 @@ def coverage_report(norm: dict) -> dict[str, dict]:
     # capex and impairment are episodic by nature -- a filer with no writedowns
     # correctly has no impairment facts. Coverage is only meaningful for metrics
     # that should appear every quarter.
-    for metric in FLOW_METRICS - {"capex", "impairment"}:
+    for metric in (FLOW_METRICS | AVERAGED_FLOWS) - {"capex", "impairment"}:
         rows = norm.get(metric, [])
         ratio = derive.coverage(rows, ref)
         report[metric] = {

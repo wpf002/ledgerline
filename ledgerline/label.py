@@ -80,8 +80,22 @@ def _forward_window(norm: dict, as_of: str, n: int = HORIZON_QUARTERS) -> list[s
     Deliberately forward-looking. This is the outcome side of the experiment.
     """
     rows = signals.series(norm, "revenue", "Q")
-    future = [r for r in rows if (r.get("filed") or "") > as_of]
+    # Two conditions, both required. The period must END after the cutoff, and
+    # it must have FIRST become public after the cutoff. Filtering on the
+    # top-level `filed` alone used the newest vintage, so a quarter that ended
+    # and was published years earlier but was restated later looked like a
+    # future quarter -- 42% of cutoffs got a horizon made of quarters that had
+    # already closed, which is not an outcome window at all.
+    future = [
+        r for r in rows
+        if r["end"] > as_of and _first_public(r) > as_of
+    ]
     return [r["end"] for r in future[:n]]
+
+
+def _first_public(row: dict) -> str:
+    """When this period was first published, not when it was last revised."""
+    return min((v.get("filed") or "" for v in row.get("vintages", [row])), default="")
 
 
 def _snapshot_at(norm: dict, end_period: str) -> dict:
@@ -168,7 +182,11 @@ def _impairment(norm: dict, period: str) -> Criterion | None:
     )
     if not imp or not assets or not assets["value"]:
         return None
-    ratio = abs(imp["value"]) / assets["value"]
+    # No abs(). A derived quarter can come out negative, and treating its
+    # magnitude as a writedown counts an arithmetic artifact as an impairment.
+    if imp["value"] <= 0:
+        return None
+    ratio = imp["value"] / assets["value"]
     if ratio < IMPAIRMENT_OF_ASSETS:
         return None
     return Criterion("IMPAIRMENT", period, round(ratio, 4), IMPAIRMENT_OF_ASSETS,
@@ -183,9 +201,18 @@ def _restatement(norm: dict, period: str) -> Criterion | None:
     """
     for metric in ("revenue", "operating_cash_flow", "net_income"):
         for r in norm.get(metric, []):
-            if r["end"] == period and (r.get("form") or "").endswith("/A"):
-                return Criterion("RESTATEMENT", period, 1.0, 1.0,
-                                 f"{metric} restated for this period via {r['form']}")
+            if r["end"] != period:
+                continue
+            # Every vintage, not just the latest. An amendment superseded by a
+            # later ordinary filing leaves no trace in the top-level row, so
+            # the restatement that actually happened became invisible.
+            for v in r.get("vintages", [r]):
+                if (v.get("form") or "").endswith("/A"):
+                    return Criterion(
+                        "RESTATEMENT", period, 1.0, 1.0,
+                        f"{metric} restated for this period via {v['form']} "
+                        f"(filed {v.get('filed')})",
+                    )
     return None
 
 
@@ -254,7 +281,13 @@ def broke_date_filed(norm: dict, period: str) -> str | None:
     quarter that tripped it. Lead time must be measured against this, not
     against the period end -- a quarter ending 3/31 is not public until 5/10."""
     row = next((r for r in signals.series(norm, "revenue", "Q") if r["end"] == period), None)
-    return (row or {}).get("filed")
+    if not row:
+        return None
+    # The FIRST vintage. edgar.normalize sets the top-level `filed` from the
+    # newest vintage, so reading it dated the break to whenever the quarter was
+    # last restated -- which would inflate every lead time by the length of the
+    # restatement lag rather than measuring detection.
+    return _first_public(row) or None
 
 
 # ------------------------------------------------- secondary, not the label

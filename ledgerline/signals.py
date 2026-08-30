@@ -31,6 +31,17 @@ from . import derive
 # reverse split, IPO, exchange offer -- not economic dilution.
 CORPORATE_ACTION_THRESHOLD = 0.50
 
+# A year-ago quarter is one whose period end is roughly 365 days earlier. The
+# window absorbs 52/53-week fiscal calendars, which the old calendar-year test
+# could not.
+YOY_MIN_DAYS = 330
+YOY_MAX_DAYS = 400
+
+# A balance-sheet value may only be divided by a flow window that ends at the
+# same time. One quarter of slack covers filers whose balance and flow series
+# are tagged with slightly different period ends.
+STALE_TOLERANCE_DAYS = 100
+
 
 # ------------------------------------------------------------------- helpers
 
@@ -59,8 +70,12 @@ def yoy_at(rows: list[dict], idx: int) -> float | None:
     cur_d = date.fromisoformat(cur["end"])
     prior = None
     for r in reversed(rows[:idx]):
-        d = date.fromisoformat(r["end"])
-        if d.year == cur_d.year - 1 and abs(d.month - cur_d.month) <= 1:
+        # Match on elapsed days, not on calendar year plus month. A 52/53-week
+        # filer whose Q4 ends 2021-01-02 has its year-ago quarter ending
+        # 2019-12-28 -- two calendar years earlier by the old test, so the true
+        # comparison period was rejected and yoy silently returned None.
+        gap = (cur_d - date.fromisoformat(r["end"])).days
+        if YOY_MIN_DAYS <= gap <= YOY_MAX_DAYS:
             prior = r
             break
     if not prior or prior["value"] == 0:
@@ -76,6 +91,21 @@ def yoy(norm: dict, metric: str, kind: str = "Q", back: int = 0) -> float | None
 def ttm(norm: dict, metric: str, back: int = 0) -> float | None:
     """Trailing twelve months, or None. Contiguity-gated -- see derive.ttm."""
     return derive.ttm(series(norm, metric, "Q"), back)
+
+
+def ttm_end(norm: dict, metric: str, back: int = 0) -> str | None:
+    """Period end of the last quarter in that TTM window."""
+    rows = series(norm, metric, "Q")
+    idx = len(rows) - back - 1
+    return rows[idx]["end"] if 0 <= idx < len(rows) else None
+
+
+def _aligned(balance: dict | None, flow_end: str | None) -> bool:
+    """True if a balance-sheet row and a flow window describe the same moment."""
+    if not balance or not flow_end:
+        return False
+    gap = abs((date.fromisoformat(balance["end"]) - date.fromisoformat(flow_end)).days)
+    return gap <= STALE_TOLERANCE_DAYS
 
 
 # ------------------------------------------------------- derived diagnostics
@@ -125,19 +155,46 @@ class Diagnostics:
         return asdict(self)
 
 
+def _row_at_end(norm, metric, end, kind="Q"):
+    """The row for one metric at one exact period end, or None."""
+    return next((r for r in series(norm, metric, kind) if r["end"] == end), None)
+
+
 def _gross_profit(norm, back=0):
-    gp = at(norm, "gross_profit", "Q", back)
+    """Gross profit for the SAME period as revenue at this offset, or None.
+
+    The old version took a positional index into the gross_profit series and
+    returned it if truthy, never checking that its period matched the revenue
+    row diagnose() divides it by. Filers routinely stop tagging
+    us-gaap:GrossProfit while still tagging Revenues, so the series end at
+    different periods: GM at 2015-12-31 paired a 2012 gross profit with 2015
+    revenue for a gross margin of -13.6%, and EXPD at 2024-09-30 reached back
+    11.5 years. That fabricated MARGIN_COLLAPSE, which is one of the five
+    deterioration criteria -- so it invented positives and moved break dates.
+    """
+    rev = at(norm, "revenue", "Q", back)
+    if not rev:
+        return None
+    gp = _row_at_end(norm, "gross_profit", rev["end"])
     if gp:
         return gp["value"]
-    rev, cor = at(norm, "revenue", "Q", back), at(norm, "cost_of_revenue", "Q", back)
-    if rev and cor:
+    cor = _row_at_end(norm, "cost_of_revenue", rev["end"])
+    if cor:
         return rev["value"] - cor["value"]
     return None
 
 
 def _margin(norm, num_metric):
-    rev, num = at(norm, "revenue"), at(norm, num_metric)
-    if not rev or not num or rev["value"] == 0:
+    """A margin needs numerator and denominator from the same quarter.
+
+    Same defect class as _gross_profit: indexing the numerator series
+    positionally paired it with whatever revenue happened to be last.
+    """
+    rev = at(norm, "revenue")
+    if not rev or rev["value"] == 0:
+        return None
+    num = _row_at_end(norm, num_metric, rev["end"])
+    if not num:
         return None
     return num["value"] / rev["value"]
 
@@ -180,18 +237,23 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
     if d.revenue_yoy is not None and d.ocf_yoy is not None:
         d.cash_conversion_gap = d.revenue_yoy - d.ocf_yoy
 
-    # working capital
+    # Working capital. A days-outstanding ratio divides a point-in-time balance
+    # by a trailing flow, so the two must describe the same moment. ttm() checks
+    # that its four quarters are contiguous but not that they are RECENT, so a
+    # stale-but-internally-contiguous block returns a float: FTI at cutoff
+    # 2020-08-15 divided a 2020-06-30 inventory balance by a cost_of_revenue TTM
+    # ending 2018-06-30 and reported dio = 218 days.
     ar, inv = pit(norm, "receivables"), pit(norm, "inventory")
-    if ar and rev_ttm:
+    if ar and rev_ttm and _aligned(ar, ttm_end(norm, "revenue")):
         d.dso = ar["value"] / rev_ttm * 365
         ar_p, rev_ttm_p = pit(norm, "receivables", 4), ttm(norm, "revenue", 4)
-        if ar_p and rev_ttm_p:
+        if ar_p and rev_ttm_p and _aligned(ar_p, ttm_end(norm, "revenue", 4)):
             d.dso_delta_yoy = d.dso - (ar_p["value"] / rev_ttm_p * 365)
     cor_ttm = ttm(norm, "cost_of_revenue")
-    if inv and cor_ttm:
+    if inv and cor_ttm and _aligned(inv, ttm_end(norm, "cost_of_revenue")):
         d.dio = inv["value"] / cor_ttm * 365
         inv_p, cor_ttm_p = pit(norm, "inventory", 4), ttm(norm, "cost_of_revenue", 4)
-        if inv_p and cor_ttm_p:
+        if inv_p and cor_ttm_p and _aligned(inv_p, ttm_end(norm, "cost_of_revenue", 4)):
             d.dio_delta_yoy = d.dio - (inv_p["value"] / cor_ttm_p * 365)
 
     ar_yoy = yoy(norm, "receivables", "PIT")

@@ -80,22 +80,61 @@ def test_unrevised_facts_collapse_to_one_vintage():
     assert row["filed"] == "2012-05-08"
 
 
-def test_derived_quarter_gets_a_vintage_when_either_input_is_restated():
-    """Q2 = 6M - 3M. Restating either side changes the derived quarter, so it
-    needs a vintage at that date too."""
+def test_derived_quarter_gets_a_vintage_when_both_inputs_are_restated_together():
+    """Q2 = 6M - 3M. When a filer restates the whole year onto a new basis,
+    both cumulatives move in the same filing and the difference is still
+    arithmetic."""
     rows = [
         {"metric": "ocf", "start": "2012-01-01", "end": "2012-03-31", "value": 100.0,
          "filed": "2012-05-08", "accession": "q1"},
         {"metric": "ocf", "start": "2012-01-01", "end": "2012-06-30", "value": 250.0,
-         "filed": "2012-08-08", "accession": "q2"},
-        # the 6M cumulative is later restated downward
+         "filed": "2012-08-08", "accession": "h1"},
+        {"metric": "ocf", "start": "2012-01-01", "end": "2012-03-31", "value": 90.0,
+         "filed": "2013-08-08", "accession": "q1r"},
         {"metric": "ocf", "start": "2012-01-01", "end": "2012-06-30", "value": 220.0,
-         "filed": "2013-08-08", "accession": "q2r"},
+         "filed": "2013-08-08", "accession": "h1r"},
     ]
     q2 = next(r for r in derive.derive_quarterly(rows) if r["end"] == "2012-06-30")
     assert q2["origin"] == "derived"
     assert derive.newest_at(q2["vintages"], "2012-09-01")["value"] == 150.0
-    assert derive.newest_at(q2["vintages"], "2013-09-01")["value"] == 120.0
+    assert derive.newest_at(q2["vintages"], "2013-09-01")["value"] == 130.0
+
+
+def test_one_sided_restatement_does_not_produce_a_derived_vintage():
+    """Only one cumulative restated means the two are on different bases, and
+    differencing them subtracts two different companies. Refuse."""
+    rows = [
+        {"metric": "ocf", "start": "2012-01-01", "end": "2012-03-31", "value": 100.0,
+         "filed": "2012-05-08", "accession": "q1"},
+        {"metric": "ocf", "start": "2012-01-01", "end": "2012-06-30", "value": 250.0,
+         "filed": "2012-08-08", "accession": "h1"},
+        {"metric": "ocf", "start": "2012-01-01", "end": "2012-06-30", "value": 220.0,
+         "filed": "2013-08-08", "accession": "h1r"},
+    ]
+    q2 = next(r for r in derive.derive_quarterly(rows) if r["end"] == "2012-06-30")
+    assert [v["value"] for v in q2["vintages"]] == [150.0], "one-sided pair was differenced"
+    assert derive.newest_at(q2["vintages"], "2013-09-01")["value"] == 150.0
+
+
+def test_dltr_discontinued_operations_does_not_fabricate_negative_revenue():
+    """The reproduced case. DLTR moved Family Dollar to discontinued operations
+    and restated FY2022 revenue from 28,318M to 15,406M, without restating the
+    9M cumulative. Differencing them gave Q4 = -5,196,300,000 -- negative
+    revenue, carrying a legitimate filed date, which made DLTR a labeled
+    positive in a quarter its revenue actually grew."""
+    rows = [
+        {"metric": "revenue", "start": "2022-01-30", "end": "2022-10-29",
+         "value": 20_602_000_000.0, "filed": "2022-11-22", "accession": "9m"},
+        {"metric": "revenue", "start": "2022-01-30", "end": "2023-01-28",
+         "value": 28_318_200_000.0, "filed": "2023-03-10", "accession": "fy"},
+        {"metric": "revenue", "start": "2022-01-30", "end": "2023-01-28",
+         "value": 15_405_700_000.0, "filed": "2025-03-26", "accession": "fy-restated"},
+    ]
+    q4 = next(r for r in derive.derive_quarterly(rows, non_negative=True)
+              if r["end"] == "2023-01-28")
+    assert all(v["value"] > 0 for v in q4["vintages"]), "negative revenue emitted"
+    assert q4["value"] == 7_716_200_000.0
+    assert derive.newest_at(q4["vintages"], "2026-01-01")["value"] == 7_716_200_000.0
 
 
 def test_derived_quarter_is_not_public_before_both_inputs_are():

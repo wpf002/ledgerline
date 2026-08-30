@@ -3,6 +3,10 @@ Tier 3 gate tests. Asserts the v2 -> v3 fixes from FINDINGS.md §3.
 """
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from ledgerline import edgar, signals_v3
 from ledgerline.validate import harness
 from tests.unit.test_ingestion import discrete_facts, facts_doc, pit_facts, ytd_facts
@@ -180,6 +184,16 @@ REGIMES = ["2014-16-energy", "2017-19-idiosyncratic", "2020-covid",
 QUARTERS = 20
 
 
+@pytest.fixture(autouse=True)
+def _committed_prereg(tmp_path, monkeypatch):
+    """verdict() reads prereg.json, not the module dict -- editing the constant
+    in place used to turn a KILL into a SHIP on identical outcomes. Every
+    verdict test therefore needs a committed rule on disk."""
+    path = tmp_path / "prereg.json"
+    path.write_text(json.dumps({"committed": "2026-08-30", "rule": harness.PREREG}))
+    monkeypatch.setattr(harness, "PREREG_PATH", str(path))
+
+
 def _positives(n, lead=12, regimes=REGIMES):
     return [harness.Outcome(f"P{i}", True, True, False, "2021-02-15", lead, 0.1, QUARTERS, [],
                             regimes[i % len(regimes)], 2) for i in range(n)]
@@ -195,7 +209,8 @@ def _controls(n, n_firing, fires_each=1):
 
 def test_verdict_kills_on_false_positive_rate():
     # 60 of 200 controls firing 5 quarters each -> 300/4000 = 7.5% per quarter
-    v = harness.verdict(_positives(40) + _controls(200, 60, fires_each=5))
+    v = harness.verdict(_positives(40) + _controls(200, 60, fires_each=5),
+                        baseline_fpr=0.30)
     assert v["verdict"] == "KILL"
     assert not v["checks"]["false_positive_rate_per_quarter"]["pass"]
     assert v["checks"]["median_lead_months"]["pass"]
@@ -207,17 +222,55 @@ def test_false_positive_rate_is_measured_per_quarter_not_per_filer():
     per-quarter rate and reports the per-filer one alongside."""
     # every control fires exactly once in 20 quarters -> 5% per quarter, but
     # 100% of filers "ever fired"
-    v = harness.verdict(_positives(40) + _controls(200, 200, fires_each=1))
+    v = harness.verdict(_positives(40) + _controls(200, 200, fires_each=1),
+                        baseline_fpr=0.30)
     assert v["checks"]["false_positive_rate_per_quarter"]["value"] == 0.05
-    assert v["checks"]["false_positive_rate_per_quarter"]["pass"]
     assert v["false_positive_rate_per_filer"] == 1.0
     assert v["control_filer_quarters"] == 4000
+
+
+def test_verdict_fails_closed_when_the_naive_baseline_was_not_computed():
+    """PREREG requires the gate to beat "TTM OCF negative and net debt
+    positive". Nothing computed it, and the check was only ADDED when a value
+    was passed -- so `all(...)` over the remaining checks could not distinguish
+    a missing criterion from a passing one."""
+    v = harness.verdict(_positives(40) + _controls(200, 0))
+    assert v["checks"]["beats_naive_baseline"]["value"] == "NOT COMPUTED"
+    assert not v["checks"]["beats_naive_baseline"]["pass"]
+    assert v["verdict"] == "KILL"
+
+
+def test_regime_coverage_counts_regimes_the_gate_DETECTED_in():
+    """Presence is a property of the case set, so the old check could not fail
+    -- which made it unable to catch the beta detector it exists for. A gate
+    that fires only in one regime must fail even when all four are present."""
+    pos = _positives(40)
+    for o in pos:
+        if o.regime != "2021-22-growth-unwind":
+            o.fired, o.lead_months = False, None
+    v = harness.verdict(pos + _controls(200, 0), baseline_fpr=0.30)
+    assert len(v["regimes_present"]) == 4
+    assert v["regimes_detected"] == ["2021-22-growth-unwind"]
+    assert not v["checks"]["regime_coverage"]["pass"]
+
+
+def test_censored_positives_leave_the_hit_rate_denominator():
+    """They are excluded from the median lead, so counting them as misses in
+    the hit rate punished the gate twice for a case it could never assess."""
+    pos = _positives(40)
+    for o in pos[:20]:
+        o.censored, o.lead_months = True, None
+    v = harness.verdict(pos + _controls(200, 0), baseline_fpr=0.30)
+    assert v["n_censored_positives"] == 20
+    assert v["n_assessable_positives"] == 20
+    assert v["checks"]["positive_hit_rate"]["value"] == 1.0
 
 
 def test_verdict_kills_on_insufficient_regime_coverage():
     """A gate validated only in 2021-22 is a beta detector, not an accounting
     detector. Breadth is a pass/fail criterion, not a footnote."""
-    v = harness.verdict(_positives(40, regimes=["2021-22-growth-unwind"]) + _controls(200, 5))
+    v = harness.verdict(_positives(40, regimes=["2021-22-growth-unwind"]) + _controls(200, 5),
+                        baseline_fpr=0.30)
     assert v["verdict"] == "KILL"
     assert not v["checks"]["regime_coverage"]["pass"]
     assert v["checks"]["false_positive_rate_per_quarter"]["pass"]
@@ -225,13 +278,13 @@ def test_verdict_kills_on_insufficient_regime_coverage():
 
 def test_verdict_kills_on_sample_size():
     """The original eight-case set cannot pass regardless of how good it looks."""
-    v = harness.verdict(_positives(8) + _controls(20, 0))
+    v = harness.verdict(_positives(8) + _controls(20, 0), baseline_fpr=0.30)
     assert v["verdict"] == "KILL"
     assert not v["checks"]["sample_size"]["pass"]
 
 
 def test_verdict_ships_when_all_criteria_clear():
-    v = harness.verdict(_positives(40) + _controls(200, 10))
+    v = harness.verdict(_positives(40) + _controls(200, 10), baseline_fpr=0.30)
     assert v["verdict"] == "SHIP", v["checks"]
     assert v["checks"]["regime_coverage"]["value"] == 4
 

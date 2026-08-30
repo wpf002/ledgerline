@@ -158,12 +158,17 @@ def admit(cik: str, ticker: str, norm: dict, sic: str | None,
     if start is None:
         return False, f"fewer than {MIN_HISTORY_QUARTERS}q of post-mandate XBRL history"
 
-    cov = edgar.coverage_report(norm)
+    # Coverage is judged on the snapshot at the filer's own first scoreable
+    # date, not on the whole-life fact set. The scorer never sees a filer's
+    # whole life -- it sees a point-in-time truncation -- so testing admission
+    # against a series the scorer cannot observe drops filers for gaps that
+    # postdate every cutoff they would have been assessed at.
+    cov = edgar.coverage_report(edgar.as_of(norm, start))
     blocked = [m for m in ("revenue", "operating_cash_flow", "net_income")
                if m in cov and cov[m]["n"] and not cov[m]["scoreable"]]
     if blocked:
         detail = ", ".join(f"{m} {cov[m]['ratio']:.0%}" for m in blocked)
-        return False, f"insufficient quarterly coverage: {detail}"
+        return False, f"insufficient quarterly coverage at {start}: {detail}"
 
     if broke:
         broke_d = f"{broke}-15" if len(broke) == 7 else broke

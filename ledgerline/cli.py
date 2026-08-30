@@ -19,6 +19,7 @@ from datetime import date, datetime
 import typer
 
 from . import backtest, edgar, signals_v3
+from . import calibrate as calib
 from . import universe as uni
 from .validate import harness
 
@@ -169,6 +170,28 @@ def split(seed: int = typer.Option(..., help="record this in the commit message"
 def prereg():
     """Write the decision rule. Refuses to overwrite."""
     typer.echo(json.dumps(harness.write_prereg(), indent=2))
+
+
+@app.command()
+def calibrate(split: str = "tuning"):
+    """Phase 0f. Fit weights and the operating point on the TUNING split.
+
+    Never touches the holdout. Commit calibration.json before running
+    `validate --split holdout`, which may only be run once.
+    """
+    def progress(i, n, rows):
+        if i % 25 == 0 or i == n:
+            typer.echo(f"  {i}/{n} cases, {rows} filer-quarters")
+
+    payload = calib.run(split=split, progress=progress)
+    c = payload["chosen"]
+    typer.echo(f"\nrows {payload['n_rows']}  deteriorating {payload['n_positive_rows']}")
+    typer.echo(f"Z_TRIGGER {c['z_trigger']}  raw_cutoff {c.get('raw_cutoff')}  "
+               f"SCORE_DIVISOR {payload['SCORE_DIVISOR']}")
+    typer.echo(f"tuning fpr/quarter {c.get('tuning_fpr_per_quarter')}  "
+               f"recall {c.get('tuning_recall_on_deteriorating_quarters')}")
+    for f, w in sorted(c["weights"].items(), key=lambda kv: -kv[1]):
+        typer.echo(f"  {f:24} {w:7.3f}")
 
 
 @app.command()

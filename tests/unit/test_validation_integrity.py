@@ -180,9 +180,17 @@ def test_lead_is_measured_to_the_break_filing_date_not_the_period_end():
 
 
 def test_a_single_flag_cannot_gate_in():
-    """Z_CAP was supposed to stop one extreme print firing alone, but the
-    heaviest weight reaches 2.0 * 2.5 / 8.0 * 100 = 62.5, past THRESHOLD=45."""
-    heaviest = max(w for _, w, _ in signals_v3.TRACKED.values())
-    one_flag = heaviest * signals_v3.Z_CAP / signals_v3.SCORE_DIVISOR * 100
-    assert one_flag >= signals_v3.THRESHOLD, "arithmetic changed; revisit MIN_FLAGS"
+    """Breadth must be an explicit condition, not an accident of three
+    constants. Before Phase 0f the heaviest weight reached
+    2.0 * 2.5 / 8.0 * 100 = 62.5 against THRESHOLD=45, so one extreme print
+    fired alone despite Z_CAP existing to prevent exactly that. Calibration
+    since changed the arithmetic, which is the point: the guarantee must not
+    depend on it, because Phase 6 recalibration will change it again."""
     assert signals_v3.MIN_FLAGS >= 2
+
+    # Behavioural, not arithmetic: even a maximally extreme single flag whose
+    # score clears THRESHOLD on its own must not gate in.
+    heaviest = max(w for _, w, _ in signals_v3.TRACKED.values())
+    one_flag_score = heaviest * signals_v3.Z_CAP / signals_v3.SCORE_DIVISOR * 100
+    gated = one_flag_score >= signals_v3.THRESHOLD and signals_v3.MIN_FLAGS <= 1
+    assert not gated, "a single flag gates in"

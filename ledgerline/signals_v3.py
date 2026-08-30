@@ -28,12 +28,29 @@ FIXES over v2 (see FINDINGS.md §3):
      derive.COVERAGE_MIN is excluded with a logged reason instead of scored on
      partial data.
 
-WEIGHTS AND THRESHOLD ARE NOT CALIBRATED. The values below are placeholders
-carried over from v2 so the module runs. Z_TRIGGER, the weight table and
-THRESHOLD in v2 were all chosen while looking at the same eight cases the lead
-times were reported on -- no holdout, one macro regime. Per ROADMAP Phase 3
-these get fit on the tuning split by logistic regression against labeled
-outcomes. Until then, treat any score from this module as uncalibrated.
+CALIBRATED (Phase 0f, 2026-08-30) on the TUNING split only, split sha256
+5c12ce54..., against the pre-registered rule in data/prereg.json.
+
+The weight table below is the coefficient vector of a ridge logistic regression
+fitted to 18,480 tuning filer-quarters (1,699 of them followed by a
+deterioration event, a 9.2% base rate). The features ARE the gate's own hinge
+terms, min(max(z,0)/Z_TRIGGER, Z_CAP), so a coefficient here is directly the
+weight applied below -- the score can be recomputed by hand from the published
+z values and this table. See ledgerline/calibrate.py and data/calibration.json,
+which records the full grid, the intercept and the unclamped coefficients.
+
+Two coefficients came out NEGATIVE and are clamped to zero: deferred_vs_revenue_gap
+and net_debt_to_ttm_ocf. On this data they pointed opposite to their declared
+direction. Clamping says "contributed nothing" rather than letting a diagnostic
+that was supposed to be evidence argue the gate OUT of firing.
+
+Z_TRIGGER was chosen from a grid rather than assumed; 1.5/2.0/2.5/3.0 all land
+within 0.13-0.14 recall at the FPR ceiling, so the gate is not sensitive to it.
+
+The operating point is the most sensitive raw cutoff whose per-quarter
+false-positive rate on tuning CONTROL quarters stays under the pre-registered
+0.04. It binds: tuning FPR is 0.03995 and recall on deteriorating quarters is
+0.1396. That number is the honest tuning-set performance and it is low.
 """
 from __future__ import annotations
 
@@ -50,19 +67,19 @@ from .signals import Diagnostics, diagnose, series
 #   scale_floor  : minimum sd, in the diagnostic's own units. Prevents a quiet
 #                  stretch from turning ordinary noise into a 5-sigma event.
 TRACKED: dict[str, tuple[int, float, float]] = {
-    "cash_conversion_gap":     (+1, 2.0, 0.05),
-    "accrual_ratio":           (+1, 2.0, 0.010),
-    "receivables_vs_revenue":  (+1, 1.5, 0.05),
-    "inventory_vs_revenue":    (+1, 1.5, 0.05),
-    "dso":                     (+1, 1.0, 2.0),
-    "dio":                     (+1, 1.0, 3.0),
-    "deferred_vs_revenue_gap": (-1, 2.0, 0.05),
-    "revenue_accel":           (-1, 1.5, 0.02),
-    "gross_margin":            (-1, 1.5, 0.005),
-    "op_margin":               (-1, 1.0, 0.005),
-    "ocf_to_revenue":          (-1, 1.5, 0.010),
-    "net_debt_to_ttm_ocf":     (+1, 1.0, 0.25),
-    "dilution_yoy":            (+1, 1.0, 0.005),
+    "cash_conversion_gap":     (+1, 0.2881, 0.05),
+    "accrual_ratio":           (+1, 0.1548, 0.01),
+    "receivables_vs_revenue":  (+1, 0.2305, 0.05),
+    "inventory_vs_revenue":    (+1, 0.1297, 0.05),
+    "dso":                     (+1, 0.0298, 2.0),
+    "dio":                     (+1, 0.2221, 3.0),
+    "deferred_vs_revenue_gap": (-1, 0.0000, 0.05),
+    "revenue_accel":           (-1, 0.3539, 0.02),
+    "gross_margin":            (-1, 0.3818, 0.005),
+    "op_margin":               (-1, 0.0042, 0.005),
+    "ocf_to_revenue":          (-1, 0.1025, 0.01),
+    "net_debt_to_ttm_ocf":     (+1, 0.0000, 0.25),
+    "dilution_yoy":            (+1, 0.0949, 0.005),
 }
 
 LABELS = {
@@ -128,15 +145,15 @@ def _uncovered(name: str, cov: dict) -> bool:
 MIN_HISTORY = 12       # quarters of own history before a filer is scoreable
 MIN_BASELINE_N = 8     # non-null observations required per diagnostic
 MAX_BASELINE = 20      # cap the lookback so the baseline tracks the business
-Z_TRIGGER = 2.0        # UNCALIBRATED -- see module docstring
-THRESHOLD = 45.0       # UNCALIBRATED -- see module docstring
-SCORE_DIVISOR = 8.0    # UNCALIBRATED -- see module docstring
+Z_TRIGGER = 2.0        # fitted on tuning, Phase 0f
+THRESHOLD = 45.0       # operating point, Phase 0f (see SCORE_DIVISOR)
+SCORE_DIVISOR = 2.2178  # maps the fitted raw cutoff onto THRESHOLD
 Z_CAP = 2.5            # a 10-sigma print should not outvote breadth
 # Z_CAP was supposed to make a single extreme print unable to fire on its own,
-# but it does not: the heaviest weight is 2.0, so one flag reaches
-# 2.0 * 2.5 / 8.0 * 100 = 62.5, comfortably past THRESHOLD = 45. Breadth is now
-# an explicit condition rather than an emergent property of three constants
-# that Phase 0f is going to refit anyway. Pinned by a test.
+# and before calibration it did not: the heaviest weight was 2.0, so one flag
+# reached 2.0 * 2.5 / 8.0 * 100 = 62.5, past THRESHOLD = 45. Breadth is an
+# explicit condition rather than an emergent property of three constants that
+# recalibration keeps changing. Pinned by a test.
 MIN_FLAGS = 2          # distinct diagnostics that must fire together
 
 
@@ -168,6 +185,11 @@ class Verdict:
     coverage: dict = field(default_factory=dict)
     derived_fraction: float = 0.0
     diagnostics: dict = field(default_factory=dict)
+    # Signed z for EVERY diagnostic that could be computed, including those
+    # below Z_TRIGGER. Calibration fits on these, so the weights are fitted to
+    # the same numbers production computes rather than to a parallel
+    # reimplementation that could drift from the gate.
+    z: dict = field(default_factory=dict)
 
     def as_dict(self):
         return asdict(self)
@@ -273,6 +295,7 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
                        diagnostics=current.as_dict()).as_dict()
 
     flags: list[ZFlag] = []
+    all_z: dict[str, float] = {}
     for name, (direction, weight, floor) in TRACKED.items():
         cur = getattr(current, name)
         if cur is None:
@@ -285,6 +308,7 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
             continue
         z, mu, sd, floored = res
         signed = z * direction
+        all_z[name] = round(signed, 4)
         if signed < Z_TRIGGER:
             continue
         flags.append(
@@ -323,4 +347,5 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         derived_fraction=current.derived_fraction,
         flags=[asdict(f) for f in flags],
         diagnostics=current.as_dict(),
+        z=all_z,
     ).as_dict()

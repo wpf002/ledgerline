@@ -62,14 +62,74 @@ def classify(start: str, end: str) -> str | None:
     return None
 
 
+def newest_at(vintages: list[dict], cutoff: str) -> dict | None:
+    """The most recent vintage of a fact published on or before `cutoff`.
+
+    This is what "point in time" actually means for XBRL: a fact is not one
+    value, it is a sequence of vintages. The original 10-Q number, then
+    whatever a later filing restated it to. A reader on 2012-08-15 saw the
+    2012-05-08 vintage, not the 2014-02-21 one.
+    """
+    hit = None
+    for v in vintages:  # ascending by filed
+        if (v.get("filed") or "") > cutoff:
+            break
+        hit = v
+    return hit
+
+
+def collect_vintages(rows: list[dict], key) -> dict:
+    """key -> [vintage, ...] ascending by `filed`, one entry per filed date.
+
+    Two facts for the same key on the same date means two candidate concepts;
+    the higher-priority concept (lower rank) wins, matching _pick semantics.
+    Consecutive vintages carrying an identical value are collapsed, so a fact
+    restated three times but never changed stores one entry, not four.
+    """
+    by_key: dict = {}
+    for r in rows:
+        k = key(r)
+        if k is None:
+            continue
+        filed = r.get("filed") or ""
+        slot = by_key.setdefault(k, {})
+        prev = slot.get(filed)
+        if prev is None or r.get("rank", 0) < prev.get("rank", 0):
+            slot[filed] = r
+
+    out = {}
+    for k, slot in by_key.items():
+        seq, last = [], object()
+        for filed in sorted(slot):
+            row = slot[filed]
+            if row["value"] != last:
+                seq.append(row)
+                last = row["value"]
+        out[k] = seq
+    return out
+
+
 def derive_quarterly(rows: list[dict]) -> list[dict]:
-    """Raw duration facts for one metric -> a contiguous quarterly series.
+    """Raw duration facts for one metric -> a contiguous quarterly series,
+    every period end carrying its full vintage history.
 
     Each input row needs: start, end, value, filed. Optional: form, fy, fp,
     concept, accession, rank (concept priority, lower is better).
+
+    FIX: the previous version collapsed each (start, bucket) to a single fact,
+    keeping the most recently filed one -- "restatements supersede originals."
+    Combined with truncation on `filed`, that produced the opposite of
+    point-in-time. ABT's Q1 2012 was filed 2012-05-08 at $9.457B and restated
+    to $5.284B for the AbbVie spin-off; the surviving row carried the 2014-02-21
+    10-K's filed date, so as_of() hid a quarter that had been public for 21
+    months, and any baseline that did include it used the restated figure.
+    Across 150 filers that delayed first scoreability by a median of 56 months.
+
+    Each returned row is the LATEST vintage (correct for outcome labeling,
+    which is allowed to look forward) and carries `vintages` so edgar.as_of()
+    can rewind it to what was public at a given cutoff.
     """
-    # 1. bucket, deduping on (start, bucket) by concept rank then filed date
-    buckets: dict[tuple[str, str], dict] = {}
+    valid = []
     for r in rows:
         start, end, value = r.get("start"), r.get("end"), r.get("value")
         if not start or not end or value is None:
@@ -77,44 +137,70 @@ def derive_quarterly(rows: list[dict]) -> list[dict]:
         bucket = classify(start, end)
         if bucket is None:
             continue
-        key = (start, bucket)
-        prior = buckets.get(key)
-        if prior is not None and _keep_prior(prior, r):
-            continue
-        buckets[key] = {**r, "bucket": bucket}
+        valid.append({**r, "bucket": bucket})
 
-    # 2. emit reported quarters directly, difference the cumulatives
-    out: list[dict] = []
-    for (start, bucket), fact in buckets.items():
+    buckets = collect_vintages(valid, key=lambda r: (r["start"], r["bucket"]))
+
+    # per period end: {filed -> candidate row}
+    per_end: dict[str, dict[str, dict]] = {}
+
+    def offer(row: dict) -> None:
+        slot = per_end.setdefault(row["end"], {})
+        cur = slot.get(row["filed"])
+        # at the same filed date a directly reported quarter beats a derived one
+        if cur is None or (cur["origin"] == "derived" and row["origin"] == "reported"):
+            slot[row["filed"]] = row
+
+    for (start, bucket), vints in buckets.items():
         if bucket == "Q":
-            out.append(_row(fact, fact["value"], q_start=start, origin="reported",
-                            bucket=bucket, sources=[fact.get("accession")]))
+            for v in vints:
+                offer(_row(v, v["value"], q_start=start, origin="reported",
+                           bucket=bucket, sources=[v.get("accession")]))
             continue
 
-        prior = buckets.get((start, PRIOR_BUCKET[bucket]))
-        if prior is None:
+        prior_vints = buckets.get((start, PRIOR_BUCKET[bucket]))
+        if not prior_vints:
             # Without the preceding cumulative this would emit a multi-quarter
             # figure labelled as one quarter -- the exact bug being fixed. Drop.
             continue
-        out.append(
-            _row(
-                fact,
-                fact["value"] - prior["value"],
-                q_start=prior["end"],
-                origin="derived",
-                bucket=bucket,
-                sources=[fact.get("accession"), prior.get("accession")],
-                filed=max(fact.get("filed") or "", prior.get("filed") or ""),
-            )
-        )
 
-    # 3. one row per period end; a directly reported quarter beats a derived one
-    best: dict[str, dict] = {}
-    for r in out:
-        cur = best.get(r["end"])
-        if cur is None or (cur["origin"] == "derived" and r["origin"] == "reported"):
-            best[r["end"]] = r
-    return sorted(best.values(), key=lambda r: r["end"])
+        # A derived quarter is public once BOTH inputs are, and it CHANGES
+        # whenever either input is restated -- so it has a vintage at every
+        # date either side moved.
+        for d in sorted({v.get("filed") or "" for v in vints}
+                        | {p.get("filed") or "" for p in prior_vints}):
+            cum, prior = newest_at(vints, d), newest_at(prior_vints, d)
+            if cum is None or prior is None:
+                continue
+            offer(
+                _row(
+                    cum,
+                    cum["value"] - prior["value"],
+                    q_start=prior["end"],
+                    origin="derived",
+                    bucket=bucket,
+                    sources=[cum.get("accession"), prior.get("accession")],
+                    filed=d,
+                )
+            )
+
+    out = []
+    for end in sorted(per_end):
+        seq = [per_end[end][f] for f in sorted(per_end[end])]
+        seq = _collapse(seq)
+        out.append({**seq[-1], "vintages": seq})
+    return out
+
+
+def _collapse(seq: list[dict]) -> list[dict]:
+    """Drop vintages that restated nothing, so the stored history is the list
+    of actual revisions rather than one entry per filing that mentioned it."""
+    kept: list[dict] = []
+    for row in seq:
+        if kept and kept[-1]["value"] == row["value"] and kept[-1]["origin"] == row["origin"]:
+            continue
+        kept.append(row)
+    return kept
 
 
 def _keep_prior(prior: dict, new: dict) -> bool:

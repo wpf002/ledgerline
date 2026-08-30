@@ -163,7 +163,16 @@ def _history(ticker: str, cik: str, norm: dict, as_of_date: str) -> list[Diagnos
     Each snapshot contains only what a reader could have seen on the day that
     quarter's filing landed.
     """
-    filed_dates = sorted({r["filed"] for r in series(norm, "revenue", "Q") if r.get("filed")})
+    # Every date on which a revenue fact was first published OR restated. Using
+    # only the top-level `filed` would collapse to the latest vintage of each
+    # quarter -- which is what made a filer with 73 quarters of history report
+    # 33 distinct filing dates, and then "6q of 12" at a 2017 cutoff.
+    filed_dates = sorted({
+        v["filed"]
+        for r in series(norm, "revenue", "Q")
+        for v in r.get("vintages", [r])
+        if v.get("filed")
+    })
     filed_dates = [f for f in filed_dates if f <= as_of_date]
     out: list[Diagnostics] = []
     for f in filed_dates[-(MAX_BASELINE + 1) : -1]:  # exclude the current quarter

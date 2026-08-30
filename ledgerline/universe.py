@@ -117,11 +117,20 @@ def fetch_sic(cik: str) -> str | None:
 def scoreable_from(norm: dict) -> str | None:
     """The earliest cutoff at which this filer has both contemporaneous XBRL and
     MIN_HISTORY_QUARTERS of its own history. None means never scoreable."""
-    rows = [r for r in signals.series(norm, "revenue", "Q")
-            if (r.get("filed") or "") >= XBRL_FLOOR]
-    if len(rows) < MIN_HISTORY_QUARTERS + 1:
+    # A quarter became public at its FIRST vintage, not its latest. Reading the
+    # top-level `filed` here would date each quarter to whichever later filing
+    # last restated it, pushing this estimate years too late -- the same
+    # collapse that broke signals_v3._history().
+    def _first_public(row: dict) -> str:
+        return min((v.get("filed") or "" for v in row.get("vintages", [row])), default="")
+
+    first_public = sorted(
+        f for r in signals.series(norm, "revenue", "Q")
+        if (f := _first_public(r)) >= XBRL_FLOOR
+    )
+    if len(first_public) < MIN_HISTORY_QUARTERS + 1:
         return None
-    return max(rows[MIN_HISTORY_QUARTERS]["filed"], EARLIEST_CUTOFF)
+    return max(first_public[MIN_HISTORY_QUARTERS], EARLIEST_CUTOFF)
 
 
 def regime_for(period: str) -> str | None:

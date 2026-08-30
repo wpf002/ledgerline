@@ -472,19 +472,24 @@ def _raw_rows(facts: dict, metric: str, concepts: list[str]) -> list[dict]:
 
 
 def _pit_rows(rows: list[dict]) -> list[dict]:
-    """Point-in-time (balance sheet) values: one per period end."""
-    best: dict[str, dict] = {}
-    for r in rows:
-        if r.get("start"):  # duration fact, not a balance
-            continue
-        cur = best.get(r["end"])
-        if cur is not None and (
-            cur["rank"] < r["rank"]
-            or (cur["rank"] == r["rank"] and (cur.get("filed") or "") >= (r.get("filed") or ""))
-        ):
-            continue
-        best[r["end"]] = {**r, "kind": "PIT", "origin": "reported", "sources": [r.get("accession")]}
-    return sorted(best.values(), key=lambda r: r["end"])
+    """Point-in-time (balance sheet) values, one row per period end carrying
+    its full vintage history.
+
+    Same fix as derive.derive_quarterly: keeping only the newest vintage and
+    then truncating on `filed` hid balances that had been public for years and
+    substituted restated figures for the originals.
+    """
+    seq = derive.collect_vintages(
+        [r for r in rows if not r.get("start")], key=lambda r: r["end"]
+    )
+    out = []
+    for end in sorted(seq):
+        vints = [
+            {**r, "kind": "PIT", "origin": "reported", "sources": [r.get("accession")]}
+            for r in seq[end]
+        ]
+        out.append({**vints[-1], "vintages": vints})
+    return out
 
 
 def _summed_pit(facts: dict, metric: str, groups: list[list[str]]) -> list[dict]:
@@ -505,32 +510,47 @@ def _summed_pit(facts: dict, metric: str, groups: list[list[str]]) -> list[dict]
 
     out = []
     for end, primary in per_group[0].items():
-        total = 0.0
-        sources, concepts, filed = [], [], primary.get("filed")
-        for g in per_group:
-            hit = g.get(end)
-            if hit is None:
-                continue
-            total += hit["value"]
-            sources += hit.get("sources", [])
-            concepts.append(hit["concept"])
-            filed = max(filed or "", hit.get("filed") or "")
-        out.append(
-            {
-                "metric": metric,
-                "kind": "PIT",
-                "start": None,
-                "end": end,
-                "value": total,
-                "fy": primary.get("fy"),
-                "fp": primary.get("fp"),
-                "form": primary.get("form"),
-                "filed": filed,
-                "concept": "+".join(concepts),
-                "origin": "summed",
-                "sources": [s for s in sources if s],
-            }
-        )
+        # The sum has a vintage wherever ANY component was filed or restated;
+        # at each such date every component contributes its own newest vintage.
+        dates = sorted({
+            v.get("filed") or ""
+            for g in per_group if end in g
+            for v in g[end].get("vintages", [g[end]])
+        })
+        vints = []
+        for d in dates:
+            head = derive.newest_at(primary.get("vintages", [primary]), d)
+            if head is None:
+                continue  # the primary component is not public yet -> no total
+            total, sources, concepts = 0.0, [], []
+            for g in per_group:
+                row = g.get(end)
+                if row is None:
+                    continue
+                hit = derive.newest_at(row.get("vintages", [row]), d)
+                if hit is None:
+                    continue  # component not yet filed -> contributes zero
+                total += hit["value"]
+                sources += hit.get("sources", [])
+                concepts.append(hit["concept"])
+            vints.append(
+                {
+                    "metric": metric,
+                    "kind": "PIT",
+                    "start": None,
+                    "end": end,
+                    "value": total,
+                    "fy": head.get("fy"),
+                    "fp": head.get("fp"),
+                    "form": head.get("form"),
+                    "filed": d,
+                    "concept": "+".join(concepts),
+                    "origin": "summed",
+                    "sources": [s for s in sources if s],
+                }
+            )
+        if vints:
+            out.append({**vints[-1], "vintages": vints})
     return sorted(out, key=lambda r: r["end"])
 
 
@@ -580,7 +600,19 @@ def as_of(norm: dict, cutoff: str) -> dict:
     """
     out = {}
     for metric, rows in norm.items():
-        keep = [r for r in rows if (r.get("filed") or "9999-12-31") <= cutoff]
+        keep = []
+        for r in rows:
+            vints = r.get("vintages")
+            if not vints:
+                if (r.get("filed") or "9999-12-31") <= cutoff:
+                    keep.append(r)
+                continue
+            # Not "was this row filed by the cutoff" but "which version of it
+            # had been published by then". A quarter restated in 2014 was still
+            # public, at its original value, in 2012.
+            hit = derive.newest_at(vints, cutoff)
+            if hit is not None:
+                keep.append({**r, **hit, "vintages": vints})
         if keep:
             out[metric] = keep
     return out

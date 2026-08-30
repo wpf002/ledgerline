@@ -26,6 +26,11 @@ Records:
 Research (the validation experiment; most are one-shot):
     build-cases, periods, split, commit-rule, calibrate, run-test,
     phase0-freeze, replay
+
+    ledgerline retest reserve/register/status
+                                         set aside FUTURE company-quarters now,
+                                         so a revised detector can one day be
+                                         tested on data nobody has seen
 """
 from __future__ import annotations
 
@@ -43,9 +48,19 @@ from . import peers as peer_mod
 from . import provenance as prov
 from . import status as phase0
 from . import universe as uni
-from .validate import harness
+from .validate import harness, retest
 
 app = typer.Typer(add_completion=False, help=__doc__)
+
+retest_app = typer.Typer(
+    add_completion=False,
+    help="Set aside future company-quarters now, before anyone designs a "
+         "revised detector, so a revision can one day be tested on data "
+         "nobody has seen. The 2026-08-30 test can never be re-run: its "
+         "companies are known, so a second look could always have been "
+         "peeked at. Fresh data only accrues forward -- every month not "
+         "reserved is a month lost.")
+app.add_typer(retest_app, name="retest")
 
 
 def _resolve(ticker: str) -> str | None:
@@ -823,6 +838,137 @@ def replay(split: str = typer.Option("tuning", help="Which half of the cases "
                f"{already} {'was' if already == 1 else 'were'} already there "
                "and left untouched. Row counts only -- this command never "
                "reports performance. Browse them: ledgerline signals")
+
+
+# ------------------------------------------------------- the re-test reserve
+
+
+@retest_app.command("reserve")
+def retest_reserve(name: str = typer.Option(..., help="A short label for this "
+                                            "reserved set, e.g. r1. Used to "
+                                            "refer to it later; never reused."),
+                   after: str = typer.Option(..., help="Reserve quarterly "
+                                             "checkpoints strictly after this "
+                                             "date (YYYY-MM-DD). Must not be "
+                                             "in the past."),
+                   end: str = typer.Option(None, help="Last date to reserve "
+                                           "through (YYYY-MM-DD). Defaults to "
+                                           "two years after --after.")):
+    """Set aside a batch of future company-quarters for testing a revised
+    detector, and fingerprint the batch so it can never be quietly changed.
+
+    Companies from the sealed 2026-08-30 test are left out entirely, and so is
+    any company-quarter the detector's calibration already used. What remains
+    is data that does not exist yet -- the only kind a fair test can use.
+    Refuses a batch too small to settle anything, and refuses to redraw an
+    existing one. Commit ledgerline/data/retests.json afterwards.
+    """
+    entry = retest.reserve(name, after, end=end)
+    typer.echo(f"Reserved '{name}': {entry['n_companies']} companies at "
+               f"{len(entry['cutoffs'])} quarterly checkpoints "
+               f"({entry['cutoffs'][0]} .. {entry['cutoffs'][-1]}) -- "
+               f"{entry['n_pairs']} company-quarters in all, none of which "
+               "exist yet.")
+    typer.echo(f"Left out: {entry['n_holdout_tickers_excluded']} companies "
+               "from the sealed test half, and "
+               f"{entry['n_spent_pairs_excluded']} company-quarters the "
+               "calibration already used.")
+    typer.echo(f"Fingerprint {entry['sha256']}")
+    typer.echo(f"Expect roughly {entry['projected_deteriorating_quarters']} "
+               "company-quarters followed by a bad turn (a fair comparison "
+               f"needs at least {entry['needed_deteriorating_quarters']}; the "
+               "estimate assumes every quarter can be assessed, so the real "
+               "count will run lower and only becomes known as results "
+               "arrive).")
+    typer.echo(f"The first reserved quarter can be judged from "
+               f"{entry['earliest_scoreable_h4']}; the whole batch by "
+               f"{entry['fully_resolved_h4']}. Nothing speeds that up -- the "
+               "deciding filings will not have been made yet.")
+    typer.echo("Commit ledgerline/data/retests.json now. Editing a reserved "
+               "set later shows up as a fingerprint mismatch and the tool "
+               "refuses to use it.")
+
+
+@retest_app.command("register")
+def retest_register(gate_version: str = typer.Option(..., help="The revised "
+                                                     "detector's exact version "
+                                                     "fingerprint (`ledgerline "
+                                                     "signals --json` shows the "
+                                                     "current one)."),
+                    reserved: str = typer.Option(..., help="Name of the "
+                                                 "reserved set this revision "
+                                                 "will be tested on."),
+                    alpha: float = typer.Option(0.025, help="Share of the "
+                                                "0.05 false-discovery budget "
+                                                "this attempt draws. Spent "
+                                                "whether the revision wins or "
+                                                "loses; never refilled."),
+                    note: str = typer.Option(..., help="What the revision's "
+                                             "author had already seen -- at "
+                                             "minimum, that the 2026-08-30 "
+                                             "result was known. Cannot be "
+                                             "blank.")):
+    """Put an intended test on the record BEFORE it runs: which revision,
+    against which reserved set, at what share of the error budget, and what
+    its author already knew.
+
+    Registering does not run anything -- scoring is deliberately not built
+    until a reserved set matures. It draws down a shared budget: unlimited
+    quiet attempts would guarantee a lucky win eventually, and a win nobody
+    can distinguish from luck is worthless.
+    """
+    attempt = retest.register(gate_version, reserved, alpha, note)
+    remaining = retest.ALPHA_BUDGET - retest.alpha_spent()
+    typer.echo(f"Registered: revision {attempt['gate_version']} against "
+               f"reserved set '{attempt['reserved']}', drawing "
+               f"{attempt['alpha']:.3f} of the error budget "
+               f"({remaining:.3f} of {retest.ALPHA_BUDGET:.3f} remains).")
+    entry = retest.load_reserved(reserved)
+    typer.echo(f"That set can first be judged on "
+               f"{entry['earliest_scoreable_h4']}.")
+    typer.echo("The bar is the failed detector's own numbers -- it caught "
+               "28.7% of what it was built to catch -- and beating a floor "
+               "that low is the minimum, not the finish line.")
+    typer.echo("Commit ledgerline/data/retests.json now.")
+
+
+@retest_app.command("status")
+def retest_status():
+    """Where the re-test effort stands: the error budget spent and left, every
+    registered attempt with its author's note, and which reserved sets are
+    still waiting to mature."""
+    rep = retest.status_report()
+    if not rep["reserved"] and not rep["attempts"]:
+        typer.echo("Nothing is reserved yet, and every month that passes is "
+                   "a month of future data lost to fair testing. Reserve one "
+                   "now:")
+        typer.echo("  ledgerline retest reserve --name r1 --after "
+                   f"{date.today().isoformat()}")
+        return
+    typer.echo(f"Error budget: {rep['alpha_spent']:.3f} of "
+               f"{rep['alpha_budget']:.3f} committed, "
+               f"{rep['alpha_remaining']:.3f} remaining.")
+    typer.echo("")
+    for entry in rep["reserved"].values():
+        state = ("already used for a test" if entry["spent"]
+                 else f"waiting -- can be judged from "
+                      f"{entry['earliest_scoreable_h4']}")
+        typer.echo(f"  '{entry['name']}': {entry['n_pairs']} company-quarters "
+                   f"({entry['cutoffs'][0]} .. {entry['cutoffs'][-1]}), "
+                   f"{state}.")
+    if rep["attempts"]:
+        typer.echo("")
+        typer.echo("Registered attempts:")
+        for a in rep["attempts"]:
+            done = "scored" if a["scored"] else "not yet scored"
+            typer.echo(f"  {a['registered_on']}  revision {a['gate_version']} "
+                       f"vs '{a['reserved']}' at {a['alpha']:.3f} of the "
+                       f"budget -- {done}.")
+            typer.echo(f"      author's note: {a['contamination_note']}")
+    typer.echo("")
+    typer.echo("The floor any revision must beat is the failed 2026-08-30 "
+               "result: 28.7% caught (needed at least 60%). A floor, not a "
+               "grade -- beating it proves improvement, not success.")
 
 
 # -------------------------------------------------- old names, kept working

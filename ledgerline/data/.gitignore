@@ -17,3 +17,8 @@
 # label the gate on a machine that holds no evidence.
 !calibration.json
 !phase0.json
+
+# And so does the re-test reserve: the hashed future evaluation sets and the
+# alpha budget they draw on. A registry that lives only on the machine that
+# reserved the set is not a registry -- same argument as prereg.json.
+!retests.json

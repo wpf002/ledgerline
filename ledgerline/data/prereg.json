@@ -1,0 +1,21 @@
+{
+  "committed": "2026-08-30",
+  "rule": {
+    "label": "fundamental_deterioration_2of5_within_4q",
+    "max_false_positive_rate_per_quarter": 0.04,
+    "report_false_positive_rate_per_filer": true,
+    "min_median_lead_months": 6,
+    "min_positive_hit_rate": 0.6,
+    "must_beat_baseline": "ttm_ocf_negative_and_net_debt_positive",
+    "min_positives": 40,
+    "min_controls": 200,
+    "min_controls_scope": "holdout",
+    "max_creditable_lead_months": 24,
+    "censored_treatment": "excluded_from_both",
+    "min_regimes": 4,
+    "regime_window": "2011-2025",
+    "excluded_sectors": "SIC 6000-6599, 6700-6799 (financials, real estate, REITs)",
+    "kill_if_any_fails": true,
+    "notes": "Lead is measured from the gate's fire date to the FILING date of the quarter that tripped the deterioration label, not to the period end. A quarter ending 3/31 is not public until it is filed. Price drawdown is reported but is not part of the rule."
+  }
+}

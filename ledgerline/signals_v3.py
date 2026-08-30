@@ -28,6 +28,17 @@ FIXES over v2 (see FINDINGS.md §3):
      derive.COVERAGE_MIN is excluded with a logged reason instead of scored on
      partial data.
 
+KILL (Phase 0, 2026-08-30). The gate this module implements FAILED its
+pre-registered holdout test, scored exactly once against data/prereg.json.
+Two of six criteria failed: it caught 28.7% of the deteriorations it was built
+to find against a required 60%, and its false-alarm rate (0.0383 per control
+filer-quarter) did not beat the 0.0051 of the naive two-line baseline it had
+to better. 51.2% of control filers were flagged at least once. The CALIBRATED
+block below therefore describes the fitted gate that failed, not a working
+one. The frozen record is ledgerline/data/phase0.json, read by
+ledgerline/status.py, whose stamp every emitted score carries; the write-up is
+reports/PHASE0.md. Do not retune and re-run against the spent holdout.
+
 CALIBRATED (Phase 0f, 2026-08-30) on the TUNING split only, split sha256
 5c12ce54..., against the pre-registered rule in data/prereg.json.
 

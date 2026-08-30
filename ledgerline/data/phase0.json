@@ -1,0 +1,78 @@
+{
+  "frozen_on": "2026-08-30",
+  "scored_on": "2026-08-30",
+  "verdict": "KILL",
+  "split": "holdout",
+  "checks": {
+    "false_positive_rate_per_quarter": {
+      "value": 0.0383,
+      "limit": 0.04,
+      "pass": true
+    },
+    "median_lead_months": {
+      "value": 9,
+      "limit": 6,
+      "pass": true
+    },
+    "positive_hit_rate": {
+      "value": 0.287,
+      "limit": 0.6,
+      "pass": false
+    },
+    "regime_coverage": {
+      "value": 6,
+      "limit": 4,
+      "pass": true
+    },
+    "sample_size": {
+      "value": {
+        "positives": 178,
+        "controls": 209
+      },
+      "limit": {
+        "positives": 40,
+        "controls": 200
+      },
+      "pass": true
+    },
+    "beats_naive_baseline": {
+      "value": 0.038265639284315006,
+      "limit": 0.005132699048572859,
+      "pass": false
+    }
+  },
+  "false_positive_rate_per_filer": 0.512,
+  "control_filer_quarters": 7657,
+  "n_positive": 178,
+  "n_control": 209,
+  "n_censored_positives": 14,
+  "n_assessable_positives": 164,
+  "regimes_detected": [
+    "2014-16-energy",
+    "2015-18-retail",
+    "2017-19-idiosyncratic",
+    "2020-covid",
+    "2021-22-growth-unwind",
+    "2023-25-rate-shock"
+  ],
+  "baseline": {
+    "rule": "ttm_ocf_negative_and_net_debt_positive",
+    "false_positive_rate_per_quarter": 0.005132699048572859,
+    "control_filer_quarters": 7988
+  },
+  "threshold": 45.0,
+  "z_trigger": 2.0,
+  "split_sha256": "5c12ce5412c4d7e1e59fee0dfde1d987481c24af001aa6ac62105fdfe1e6e439",
+  "prereg_sha256": "3bdba2fd784dc06636e76a7b6870764de8a9eb1de1abbd517a7b5bccbe1653ef",
+  "calibration": {
+    "fitted": "2026-08-30",
+    "split": "tuning",
+    "n_rows": 18480,
+    "n_positive_rows": 1699,
+    "tuning_fpr_per_quarter": 0.03995,
+    "tuning_recall_on_deteriorating_quarters": 0.1396
+  },
+  "note": "At least one pre-registered criterion failed. Per prereg.json the deterministic gate is not a viable product core. Write up the finding; do not retune and re-run against this holdout.",
+  "source_report": "reports/backtest_holdout.json",
+  "writeup": "reports/PHASE0.md"
+}

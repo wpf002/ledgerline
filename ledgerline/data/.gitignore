@@ -10,3 +10,10 @@
 !split.json
 !prereg.json
 !cases.json
+
+# So does the outcome. reports/*.json is ignored at the repo root, so without
+# these two the record of the fitted coefficients and of the Phase 0 KILL
+# would not survive a fresh clone -- and status.load() deliberately refuses to
+# label the gate on a machine that holds no evidence.
+!calibration.json
+!phase0.json

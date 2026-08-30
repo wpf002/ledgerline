@@ -15,7 +15,7 @@ Daily use:
     ledgerline status                    what is set up, what the last test said
 
 Research (the validation experiment; most are one-shot):
-    build-cases, periods, split, commit-rule, calibrate, run-test
+    build-cases, periods, split, commit-rule, calibrate, run-test, phase0-freeze
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ import typer
 
 from . import backtest, edgar, render, signals_v3
 from . import calibrate as calib
+from . import status as phase0
 from . import universe as uni
 from .validate import harness
 
@@ -148,10 +149,14 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                        "That is normal on most days.")
         return
 
+    # The verdict prints BEFORE the first result line. A feed that leads with
+    # flags and buries the failed test is an alert with a disclaimer.
+    typer.echo(phase0.banner())
+    typer.echo("")
     scored, gated = 0, 0
     today = date.today().isoformat()
     for h in hits:
-        res = signals_v3.evaluate(h["ticker"], h["cik"], as_of=today)
+        res = phase0.stamp(signals_v3.evaluate(h["ticker"], h["cik"], as_of=today))
         if not res["scoreable"]:
             typer.echo(f"  {h['ticker']:6} cannot assess -- "
                        f"{render.plain_reason(res['reason'])}")
@@ -194,7 +199,7 @@ def explain(ticker: str,
         typer.echo(f"  ledgerline watch --add {ticker.upper()}")
         raise typer.Exit(1)
     name = edgar.universe()[cik]["name"]
-    res = signals_v3.evaluate(ticker.upper(), cik, as_of=as_of)
+    res = phase0.stamp(signals_v3.evaluate(ticker.upper(), cik, as_of=as_of))
     typer.echo(render.explain(res, name=name))
 
 
@@ -210,7 +215,11 @@ def score(ticker: str, as_of: str = typer.Option(None, help="YYYY-MM-DD; uses on
         typer.echo(f"{ticker.upper()} is not on your watchlist. Add it first:")
         typer.echo(f"  ledgerline watch --add {ticker.upper()}")
         raise typer.Exit(1)
-    typer.echo(json.dumps(signals_v3.evaluate(ticker.upper(), cik, as_of=as_of),
+    # Banner to stderr so the JSON on stdout stays pipeable; the stamp travels
+    # inside the JSON so a piped consumer cannot lose the verdict.
+    typer.echo(phase0.banner(), err=True)
+    typer.echo(json.dumps(phase0.stamp(signals_v3.evaluate(ticker.upper(), cik,
+                                                           as_of=as_of)),
                           indent=2))
 
 
@@ -233,11 +242,9 @@ def status():
     else:
         typer.echo("Last scan       never   (ledgerline scan)")
     typer.echo("")
-    typer.echo("Detection test  MISSED THE BAR (scored once, 2026-08-30):")
-    typer.echo("  caught 28.7% of deteriorations; the pre-registered target was 60%.")
-    typer.echo("  Warnings averaged 9 months early, false alarms 3.8% per")
-    typer.echo("  company-quarter -- but 51% of fine companies were flagged at least")
-    typer.echo("  once. Full result: reports/backtest_holdout.json and ROADMAP.md.")
+    # Generated from the committed record, never typed here: a second copy of
+    # the result in a string literal is a copy that drifts.
+    typer.echo(phase0.banner())
 
 
 # ------------------------------------------------------- research / experiment
@@ -338,6 +345,25 @@ def calibrate(split: str = "tuning"):
     for f, w in sorted(c["weights"].items(), key=lambda kv: -kv[1]):
         short, _ = render.PLAIN.get(f, (f, ""))
         typer.echo(f"  {short:22} {w:7.3f}")
+
+
+@app.command(name="phase0-freeze")
+def phase0_freeze(report: str = typer.Option(None, help="Path to the one-shot test "
+                                             "report. Defaults to "
+                                             "reports/backtest_holdout.json.")):
+    """Copy the failed test's numbers into a small file that gets committed.
+
+    The full test report is not kept in git, so without this file a fresh copy
+    of the project holds no record of the 2026-08-30 result. Every command
+    that shows a score reads the file and stops with an error if it is
+    missing. Run this once, commit ledgerline/data/phase0.json, then leave it
+    alone -- it refuses to overwrite.
+    """
+    phase0.freeze(report)
+    typer.echo(f"Wrote {phase0.PHASE0_PATH}. Commit it: it is the record every "
+               "score-showing command reads.")
+    typer.echo("")
+    typer.echo(phase0.banner())
 
 
 @app.command(name="run-test")

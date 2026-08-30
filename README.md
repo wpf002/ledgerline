@@ -6,12 +6,14 @@ whose numbers have started behaving unlike that same company's own past. Not
 off it says so, shows the arithmetic, and links back to the filing the numbers
 came from.
 
-**It does not work — yet.** On 30 August 2026 the detection method was scored
-once against a standard written down and committed to git before the test ran.
-It caught 28.7% of the deteriorations it was built to warn about; the bar it
-had set for itself was 60%. It also raised more false alarms than the crude
-one-line rule it had to beat. Two of six criteria failed, so the pre-registered
-answer is no. See the result table at the top of `ROADMAP.md`.
+**Status: tested and failed — KILL, 2026-08-30.** The detection method was
+scored once against a standard written down and committed to git before the
+test ran. It caught 28.7% of the deteriorations it was built to warn about;
+the bar it had set for itself was 60%. And it raised false alarms on 3.83% of
+quiet company-quarters, where the crude two-line rule it had to beat raises
+0.51%. Two of six criteria failed, so the pre-registered answer is no. Full
+write-up: `reports/PHASE0.md`; the frozen numbers every score-showing command
+reads live in `ledgerline/data/phase0.json`.
 
 What *is* solid is everything underneath: point-in-time discipline (the tool
 only ever uses figures that had actually been filed by the date it is asked

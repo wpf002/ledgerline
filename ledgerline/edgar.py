@@ -307,8 +307,40 @@ def detect_changes(days_back: int = 1, as_of: date | None = None) -> list[dict]:
 
 
 def submissions(cik: str) -> dict:
-    """Per-company filing history. Backfill only -- never poll this."""
-    return fetch_json(f"https://data.sec.gov/submissions/CIK{pad(cik)}.json")
+    """Per-company filing history. Backfill only -- never poll this.
+
+    Cached, unlike the daily index. Unlike companyfacts this file IS mutable
+    (new filings append to it), so the cache is only sound for the static
+    company metadata read off it -- SIC, name, fiscal year end. Tier 0 change
+    detection deliberately does not read this file; it reads the daily index,
+    which is the whole point of the cost architecture.
+    """
+    return fetch_json(
+        f"https://data.sec.gov/submissions/CIK{pad(cik)}.json",
+        f"submissions/CIK{pad(cik)}.json",
+    )
+
+
+def set_sic(rows: list[tuple[str, str | None]]) -> int:
+    """Persist (cik, sic) into the universe table.
+
+    The column existed from the first schema but nothing ever wrote it, so
+    every `cases` run re-fetched 1500 submissions files to recover a value that
+    does not change. Written once here, read back by universe.fetch_sic.
+    """
+    conn = db()
+    with conn:
+        conn.executemany("UPDATE universe SET sic = ? WHERE cik = ?",
+                         [(sic, cik) for cik, sic in rows])
+    conn.close()
+    return len(rows)
+
+
+def sic_map() -> dict[str, str | None]:
+    conn = db()
+    rows = conn.execute("SELECT cik, sic FROM universe").fetchall()
+    conn.close()
+    return {r[0]: r[1] for r in rows}
 
 
 # ------------------------------------------------ Tier 1: XBRL metric layer

@@ -17,3 +17,4 @@ reports/*.html
 # universe snapshot is committed (reproducibility); run state is not
 scripts/backfill_state.json
 reports/*.log
+scripts/sic_state.json

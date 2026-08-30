@@ -89,7 +89,25 @@ def sic_excluded(sic: str | int | None) -> bool:
     return any(lo <= code <= hi for lo, hi in EXCLUDED_SIC_RANGES)
 
 
+_SIC_CACHE: dict[str, str | None] | None = None
+
+
 def fetch_sic(cik: str) -> str | None:
+    """SIC for one filer, from the universe table if it was backfilled.
+
+    build_cases() calls this once per filer. Going to the network each time
+    meant ~1500 requests to recover a code that never changes, on every single
+    run -- the same per-company-poll pattern Tier 0 exists to avoid.
+    """
+    global _SIC_CACHE
+    if _SIC_CACHE is None:
+        try:
+            _SIC_CACHE = edgar.sic_map()
+        except Exception:
+            _SIC_CACHE = {}
+    hit = _SIC_CACHE.get(cik)
+    if hit:
+        return hit
     try:
         return edgar.submissions(cik).get("sic")
     except Exception:

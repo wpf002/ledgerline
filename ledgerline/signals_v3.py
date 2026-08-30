@@ -69,8 +69,17 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from statistics import median
 
-from . import edgar, provenance, status
+from . import edgar, provenance, reasons, status
 from .signals import Diagnostics, diagnose, series
+
+# Which arithmetic produced a score. "3.0.0" is the gate exactly as frozen for
+# the Phase 0 holdout on 2026-08-30; "3.1.0" adds the 52/53-week span guard
+# (diagnose refuses a 14-week-vs-13-week YoY comparison, so some scores move)
+# and the structural-abstention fix (a filer whose computable diagnostics
+# cannot reach THRESHOLD at any z is unscoreable, not score 0.0). Scores from
+# different gate versions must never be pooled into one average -- the version
+# travels on every Verdict so a future track record can hold them apart.
+GATE_VERSION = "3.1.0"
 
 # diagnostic -> (direction, weight, scale_floor)
 #   direction +1 : unusually HIGH is bad
@@ -167,6 +176,20 @@ Z_CAP = 2.5            # a 10-sigma print should not outvote breadth
 # recalibration keeps changing. Pinned by a test.
 MIN_FLAGS = 2          # distinct diagnostics that must fire together
 
+# The least summed weight from which THRESHOLD is reachable at all. The score
+# is a weighted hinge sum over a FIXED divisor, so a filer's ceiling is
+# evaluated_weight * Z_CAP / SCORE_DIVISOR * 100 -- missing diagnostics
+# compress the scale rather than renormalizing it. Below this weight
+# (~0.399 of the 1.992 total) even every-diagnostic-at-maximum cannot reach
+# THRESHOLD, and reporting score 0.0 for such a filer is a structural
+# abstention wearing the costume of a clean assessment: one existed in a
+# 250-filer sample as score 0.0 / gated_in False / scoreable True.
+MIN_SCOREABLE_WEIGHT = THRESHOLD / 100 * SCORE_DIVISOR / Z_CAP
+
+# Sum of every shipped weight; on a Verdict next to evaluated_weight it says
+# how much of the diagnostic set a filer was actually judged on.
+WEIGHT_TOTAL = sum(w for _, w, _ in TRACKED.values())
+
 
 @dataclass
 class ZFlag:
@@ -218,6 +241,27 @@ class Verdict:
     provenance: dict = field(default_factory=dict)
     provenance_label: str = "TRACED"
     abstain_reason: str | None = None
+    # Additive fields, all defaulted so asdict() stays shape-compatible for
+    # every existing consumer (backtest, calibrate, cli, render).
+    #   gate_version    which arithmetic produced this -- see GATE_VERSION.
+    #   reason_code     the countable code beside the free-text `reason`; the
+    #                   sentence stays exactly as it was.
+    #   abstentions     diagnostic -> reason code for every tracked diagnostic
+    #                   that did NOT evaluate; abstention_detail carries the
+    #                   sentence. Invariant, pinned by a test: on a scoreable
+    #                   verdict len(z) + len(abstentions) == len(TRACKED).
+    #   evaluated_weight/weight_total  how much of the diagnostic set this
+    #                   filer was actually judged on -- the scale compression
+    #                   that made THRESHOLD mean something different per filer.
+    #   accessions      reserved for the persistence layer (the signal store's
+    #                   NOT NULL trace column); empty until that layer fills it.
+    gate_version: str = GATE_VERSION
+    reason_code: str | None = None
+    abstentions: dict = field(default_factory=dict)
+    abstention_detail: dict = field(default_factory=dict)
+    evaluated_weight: float = 0.0
+    weight_total: float = WEIGHT_TOTAL
+    accessions: list = field(default_factory=list)
 
     def as_dict(self):
         return asdict(self)
@@ -333,18 +377,21 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
     if not full:
         return status.stamp(
             Verdict(ticker, cik, cutoff, scoreable=False,
-                    reason="no XBRL facts").as_dict())
+                    reason="no XBRL facts",
+                    reason_code=reasons.NO_XBRL_FACTS).as_dict())
 
     snap = edgar.as_of(full, cutoff)
     if not snap.get("revenue"):
         return status.stamp(
             Verdict(ticker, cik, cutoff, scoreable=False,
-                    reason="no revenue facts filed as of cutoff").as_dict())
+                    reason="no revenue facts filed as of cutoff",
+                    reason_code=reasons.NO_REVENUE_AT_CUTOFF).as_dict())
 
     ok, reason, cov = _coverage_gate(snap)
     if not ok:
         return status.stamp(
             Verdict(ticker, cik, cutoff, scoreable=False, reason=reason,
+                    reason_code=reasons.REQUIRED_COVERAGE_LOW,
                     coverage=cov).as_dict())
 
     current = diagnose(ticker, cik, snap)
@@ -353,20 +400,47 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         return status.stamp(
             Verdict(ticker, cik, cutoff, period=current.period, scoreable=False,
                     reason=f"insufficient own-history ({len(hist)}q of {MIN_HISTORY})",
+                    reason_code=reasons.SHORT_HISTORY,
                     coverage=cov, derived_fraction=current.derived_fraction,
                     diagnostics=current.as_dict()).as_dict())
 
     flags: list[ZFlag] = []
     all_z: dict[str, float] = {}
+    # Every tracked diagnostic is either evaluated (lands in all_z) or
+    # accounted for here -- the accounting invariant that makes the coverage
+    # dashboard's per-diagnostic histogram countable. The same three `continue`
+    # branches as before; the only change is that each now says why.
+    abstentions: dict[str, str] = {}
+    abstention_detail: dict[str, str] = {}
+
+    def record_abstention(name: str, code: str, detail: str) -> None:
+        abstentions[name] = code
+        abstention_detail[name] = detail
+
     for name, (direction, weight, floor) in TRACKED.items():
         cur = getattr(current, name)
         if cur is None:
+            # diagnose() recorded its own reason at the branch that decided
+            # the None. UNEXPLAINED means a new None-branch forgot to -- the
+            # dashboard counts it so the gap surfaces instead of hiding.
+            record_abstention(name,
+                    current.reasons.get(name, reasons.UNEXPLAINED),
+                    current.reason_detail.get(name, reasons.TEXT[reasons.UNEXPLAINED]))
             continue
         if _uncovered(name, cov):
+            gaps = ", ".join(
+                m for m in DIAGNOSTIC_INPUTS.get(name, ())
+                if cov.get(m, {}).get("n") and not cov.get(m, {}).get("scoreable"))
+            record_abstention(name, reasons.INPUT_COVERAGE_LOW,
+                    f"an input this measure needs ({gaps.replace('_', ' ')}) is "
+                    "missing from too many quarters to trust")
             continue
         baseline = [v for v in (getattr(h, name) for h in hist) if v is not None]
         res = robust_z(cur, baseline, floor)
         if res is None:
+            record_abstention(name, reasons.BASELINE_TOO_THIN,
+                    f"only {len(baseline)} past readings of this measure; "
+                    f"{MIN_BASELINE_N} are needed to know what is normal")
             continue
         z, mu, sd, floored = res
         signed = z * direction
@@ -397,6 +471,28 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
             )
         )
 
+    evaluated_weight = round(sum(TRACKED[n][1] for n in all_z), 4)
+
+    # Structural abstention: the diagnostics that DID evaluate carry too
+    # little weight to reach THRESHOLD at any z, so "score 0.0, not flagged"
+    # would be indistinguishable from "assessed, looks clean" -- the exact
+    # defect the filer-level coverage gate was written to prevent, resurfacing
+    # one level down. Unscoreable with a written reason, never score 0.0.
+    if evaluated_weight < MIN_SCOREABLE_WEIGHT:
+        ceiling = evaluated_weight * Z_CAP / SCORE_DIVISOR * 100
+        return status.stamp(
+            Verdict(ticker, cik, cutoff, period=current.period, scoreable=False,
+                    reason=(f"cannot reach the flag threshold: the "
+                            f"{len(all_z)} computable measures carry weight "
+                            f"{evaluated_weight:g} of {WEIGHT_TOTAL:g}, so the "
+                            f"score tops out at {ceiling:.0f} of the "
+                            f"{THRESHOLD:g} needed"),
+                    reason_code=reasons.CANNOT_REACH_THRESHOLD,
+                    coverage=cov, derived_fraction=current.derived_fraction,
+                    diagnostics=current.as_dict(), z=all_z,
+                    abstentions=abstentions, abstention_detail=abstention_detail,
+                    evaluated_weight=evaluated_weight).as_dict())
+
     raw = sum(f.weight * min(f.z / Z_TRIGGER, Z_CAP) for f in flags)
     score = round(min(raw / SCORE_DIVISOR * 100, 100), 1)
 
@@ -413,6 +509,9 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         flags=[asdict(f) for f in flags],
         diagnostics=current.as_dict(),
         z=all_z,
+        abstentions=abstentions,
+        abstention_detail=abstention_detail,
+        evaluated_weight=evaluated_weight,
     )
     # The README invariant, enforced at the scoring surface: a fired flag that
     # cannot cite a filing makes the reading UNTRACED and the gate abstains
@@ -438,4 +537,5 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         verdict.score = None
         verdict.reason = abstain
         verdict.abstain_reason = abstain
+        verdict.reason_code = reasons.UNTRACED
     return status.stamp(verdict.as_dict())

@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from datetime import date, timedelta
 
-from . import derive
+from . import derive, reasons
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(ROOT, "data")
@@ -288,6 +288,58 @@ CREATE TABLE IF NOT EXISTS restatements (
     PRIMARY KEY (cik, metric, end_date, kind, filed)
 );
 CREATE INDEX IF NOT EXISTS restatements_by_cik ON restatements (cik, end_date);
+-- Point-in-time coverage, superseding `coverage` (0 rows, dead: its PK
+-- (cik, metric) has no as_of, and coverage depends on the cutoff --
+-- universe.admit has always judged it on an as_of snapshot, so the old table
+-- never could hold what was actually computed). `expected` and `achieved`
+-- exist to make the structural-ceiling finding auditable: AVERAGED_FLOWS
+-- correctly refuses to difference a weighted-average share count, so a filer
+-- tagging quarterly diluted shares in each 10-Q but only an annual figure in
+-- the 10-K cannot exceed 3 of 4 quarters, and the global COVERAGE_MIN of 0.90
+-- therefore suppresses dilution_yoy in 92.3% of scoreable filers. Recorded
+-- here; deliberately NOT acted on -- unsuppressing a diagnostic in ~92% of
+-- the universe would apply a weight fitted on the ~8% where it existed.
+CREATE TABLE IF NOT EXISTS coverage_pit (
+    cik         TEXT,
+    as_of       TEXT,
+    metric      TEXT,
+    ratio       REAL,
+    expected    REAL,
+    achieved    REAL,
+    n           INTEGER,
+    scoreable   INTEGER,
+    code        TEXT,
+    detail      TEXT,
+    computed_at TEXT,
+    PRIMARY KEY (cik, as_of, metric)
+);
+-- The filer-level abstention record: the only place n_evaluated,
+-- evaluated_weight and can_reach_threshold are ever written down. The score
+-- is a weighted hinge sum over a FIXED divisor, so missing weight compresses
+-- the scale -- measured median evaluated weight 1.675 of 1.992, and one filer
+-- in a 250-filer sample could not reach THRESHOLD at any z while reporting
+-- score 0.0. `abstentions` is a JSON dict of diagnostic -> reason code,
+-- matching how metrics.sources already stores JSON rather than a join table.
+CREATE TABLE IF NOT EXISTS scoreability (
+    cik                 TEXT,
+    as_of               TEXT,
+    ticker              TEXT,
+    scoreable           INTEGER,
+    code                TEXT,
+    detail              TEXT,
+    n_evaluated         INTEGER,
+    n_tracked           INTEGER,
+    evaluated_weight    REAL,
+    weight_total        REAL,
+    can_reach_threshold INTEGER,
+    abstentions         TEXT,
+    derived_fraction    REAL,
+    fiscal_calendar     TEXT,
+    peer_level          INTEGER,
+    peer_n              INTEGER,
+    computed_at         TEXT,
+    PRIMARY KEY (cik, as_of)
+);
 """
 
 # Migrations, ordered and carried on PRAGMA user_version. CREATE TABLE IF NOT
@@ -899,12 +951,18 @@ def coverage_report(norm: dict) -> dict[str, dict]:
     for metric in (FLOW_METRICS | AVERAGED_FLOWS) - {"capex", "impairment"}:
         rows = norm.get(metric, [])
         ratio = derive.coverage(rows, ref)
+        ok = ratio >= derive.COVERAGE_MIN
         report[metric] = {
             "ratio": round(ratio, 3),
             "n": len(rows),
-            "scoreable": ratio >= derive.COVERAGE_MIN,
-            "reason": None if ratio >= derive.COVERAGE_MIN
+            "scoreable": ok,
+            "reason": None if ok
             else f"coverage {ratio:.0%} < {derive.COVERAGE_MIN:.0%}",
+            # The countable code beside the sentence. The sentence stays
+            # exactly as it was -- existing readers of ratio/n/scoreable/
+            # reason are untouched, and the code is what a dashboard can
+            # aggregate without parsing prose.
+            "code": None if ok else reasons.INPUT_COVERAGE_LOW,
         }
     return report
 
@@ -929,3 +987,56 @@ def persist_metrics(cik: str, norm: dict[str, list[dict]]) -> int:
         )
     conn.close()
     return len(payload)
+
+
+def persist_coverage(cik: str, as_of: str, report: dict[str, dict]) -> int:
+    """Write one filer's point-in-time coverage report to coverage_pit.
+
+    INSERT OR REPLACE keyed on (cik, as_of, metric): re-running a date
+    corrects it instead of accumulating -- the as_of in the key is exactly
+    what the dead `coverage` table lacked.
+    """
+    now = date.today().isoformat()
+    conn = db()
+    with conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO coverage_pit "
+            "(cik, as_of, metric, ratio, expected, achieved, n, scoreable, "
+            " code, detail, computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (cik, as_of, m, c.get("ratio"), c.get("expected"),
+                 c.get("achieved"), c.get("n"), int(bool(c.get("scoreable"))),
+                 c.get("code"), c.get("reason"), now)
+                for m, c in report.items()
+            ],
+        )
+    conn.close()
+    return len(report)
+
+
+def persist_scoreability(rows: list[dict]) -> int:
+    """Write filer-level scoreability records, one per (cik, as_of)."""
+    now = date.today().isoformat()
+    conn = db()
+    with conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO scoreability "
+            "(cik, as_of, ticker, scoreable, code, detail, n_evaluated, "
+            " n_tracked, evaluated_weight, weight_total, can_reach_threshold, "
+            " abstentions, derived_fraction, fiscal_calendar, peer_level, "
+            " peer_n, computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (r["cik"], r["as_of"], r.get("ticker"),
+                 int(bool(r.get("scoreable"))), r.get("code"), r.get("detail"),
+                 r.get("n_evaluated"), r.get("n_tracked"),
+                 r.get("evaluated_weight"), r.get("weight_total"),
+                 None if r.get("can_reach_threshold") is None
+                 else int(bool(r.get("can_reach_threshold"))),
+                 json.dumps(r.get("abstentions", {})),
+                 r.get("derived_fraction"), r.get("fiscal_calendar"),
+                 r.get("peer_level"), r.get("peer_n"), now)
+                for r in rows
+            ],
+        )
+    conn.close()
+    return len(rows)

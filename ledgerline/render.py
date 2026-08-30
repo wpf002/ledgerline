@@ -91,6 +91,11 @@ def plain_reason(reason: str | None) -> str:
         have = reason.split("(")[-1].split("q")[0]
         return (f"Only {have} quarters of its own filing history by this date; 12 are "
                 "needed before the tool knows what is normal for this company.")
+    if reason.startswith("cannot reach the flag threshold"):
+        return ("Too few of the thirteen measures can be computed for this "
+                "company: even if every one of them broke from its pattern at "
+                "once, the score could not reach the flag threshold. Scoring "
+                "it would look like a clean bill of health and mean nothing.")
     if reason.startswith("insufficient quarterly coverage"):
         detail = reason.split(":", 1)[-1].strip()
         parts = []

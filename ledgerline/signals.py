@@ -18,14 +18,25 @@ FIXES APPLIED (see FINDINGS.md):
 The v1 absolute-threshold rule set (`flags()` / `score()`) has been REMOVED.
 It fired on 60-90% of quarters across the case set because thresholds like
 "DSO up >10 days" measure a business model, not a change in one.
+
+METRIC LAYER (Phase 2):
+  * diagnose() records WHY each tracked diagnostic is None, at the branch
+    that decided it (Diagnostics.reasons / reason_detail, codes from
+    reasons.py). Motivating defect: 1 of 169 scoreable filers in a 250-filer
+    sample had all 13 diagnostics evaluated, and nothing said so.
+  * Gate-side YoY comparisons refuse a 14-week-vs-13-week span mismatch
+    (~7% calendar artifact on a 52/53-week filer's long quarter; see
+    fiscal.py). label.py's calls keep the as-reported default so the outcome
+    label stays exactly reproducible. This moves scores: signals_v3
+    GATE_VERSION was bumped for it.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from statistics import median
 
-from . import derive
+from . import derive, fiscal, reasons
 
 # A YoY move larger than this in share count is a corporate action -- split,
 # reverse split, IPO, exchange offer -- not economic dilution.
@@ -61,11 +72,24 @@ def pit(norm: dict, metric: str, back: int = 0):
     return at(norm, metric, "PIT", back)
 
 
-def yoy_at(rows: list[dict], idx: int) -> float | None:
-    """Year-over-year growth at position `idx`, matched on calendar month to
-    avoid seasonality. Tolerates +/-1 month for 52/53-week fiscal calendars."""
+def _yoy_explained(
+    rows: list[dict], idx: int, subject: str,
+    require_comparable_span: bool = False,
+) -> tuple[float | None, reasons.Abstention | None]:
+    """Year-over-year growth at `idx`, or (None, why-not).
+
+    The single implementation behind yoy_at/yoy, so the value a caller gets
+    and the reason a dashboard reports cannot come from two code paths.
+    """
+    plain = subject.replace("_", " ")
+    if not rows:
+        return None, reasons.Abstention(
+            reasons.INPUT_METRIC_ABSENT,
+            f"no quarterly {plain} figures in this company's filings", subject)
     if not 0 <= idx < len(rows):
-        return None
+        return None, reasons.Abstention(
+            reasons.NO_YEAR_AGO_QUARTER,
+            f"not enough {plain} quarters for this comparison", subject)
     cur = rows[idx]
     cur_d = date.fromisoformat(cur["end"])
     prior = None
@@ -78,9 +102,41 @@ def yoy_at(rows: list[dict], idx: int) -> float | None:
         if YOY_MIN_DAYS <= gap <= YOY_MAX_DAYS:
             prior = r
             break
-    if not prior or prior["value"] == 0:
-        return None
-    return (cur["value"] - prior["value"]) / abs(prior["value"])
+    if not prior:
+        return None, reasons.Abstention(
+            reasons.NO_YEAR_AGO_QUARTER,
+            f"no {plain} quarter from roughly a year earlier", subject)
+    # A 14-week quarter compared against a 13-week quarter manufactures a ~7%
+    # move that is calendar, not business. Rescaling by 13/14 would invent a
+    # number the filer never reported, so the only honest options are refuse
+    # (the gate's choice) or report as filed (the default, so label.py's
+    # outcome arithmetic -- the one clean measurement -- stays byte-identical).
+    if require_comparable_span and not fiscal.comparable(cur, prior):
+        return None, reasons.Abstention(
+            reasons.FISCAL_SPAN_MISMATCH,
+            f"the current {plain} quarter covers {fiscal.span_days(cur)} days "
+            f"against the year-ago quarter's {fiscal.span_days(prior)} -- a "
+            "53rd fiscal week, not a business change", subject)
+    if prior["value"] == 0:
+        return None, reasons.Abstention(
+            reasons.NONPOSITIVE_DENOMINATOR,
+            f"the year-ago {plain} figure is zero", subject)
+    return (cur["value"] - prior["value"]) / abs(prior["value"]), None
+
+
+def yoy_at(rows: list[dict], idx: int,
+           require_comparable_span: bool = False) -> float | None:
+    """Year-over-year growth at position `idx`, matched on elapsed days so
+    52/53-week fiscal calendars still find their year-ago quarter.
+
+    `require_comparable_span=False` by default: label.py calls this and the
+    outcome label must stay exactly reproducible (the 52/53-week label guard
+    was measured at ~0.5% of trips and deliberately NOT applied -- see
+    FINDINGS). The gate's diagnose() opts in, because a score is versioned and
+    a label is not.
+    """
+    val, _ = _yoy_explained(rows, idx, "value", require_comparable_span)
+    return val
 
 
 def yoy(norm: dict, metric: str, kind: str = "Q", back: int = 0) -> float | None:
@@ -151,6 +207,15 @@ class Diagnostics:
     derived_fraction: float = 0.0
     excluded_metrics: tuple[str, ...] = ()
 
+    # Why a tracked diagnostic is None: diagnostic name -> reason code from
+    # reasons.py, with the human sentence beside it. Populated by diagnose() at
+    # the branch that decided the None -- direct instrumentation, not a
+    # parallel table that re-derives the cause and can silently disagree with
+    # the code it describes. Before this, a filer scored on 2 of 13
+    # diagnostics was indistinguishable from one scored on all 13.
+    reasons: dict[str, str] = field(default_factory=dict)
+    reason_detail: dict[str, str] = field(default_factory=dict)
+
     def as_dict(self):
         return asdict(self)
 
@@ -199,20 +264,105 @@ def _margin(norm, num_metric):
     return num["value"] / rev["value"]
 
 
+# ------------------------------------------------------ abstention attribution
+#
+# Each helper answers "why is this input None" at the branch that knows, with
+# the most upstream cause first: a filer with no inventory facts is told that,
+# never "the TTM was not contiguous". These exist so diagnose() records its
+# own refusals -- the alternative, a declarative requirements table maintained
+# outside this file, was designed and rejected because it duplicates knowledge
+# that lives in these branches and drifts silently when a branch changes.
+
+
+def _ttm_explained(norm: dict, metric: str) -> tuple[float | None, reasons.Abstention | None]:
+    plain = metric.replace("_", " ")
+    rows = series(norm, metric, "Q")
+    if not rows:
+        return None, reasons.Abstention(
+            reasons.INPUT_METRIC_ABSENT,
+            f"no quarterly {plain} figures in this company's filings", metric)
+    val = derive.ttm(rows)
+    if val is None:
+        return None, reasons.Abstention(
+            reasons.TTM_NONCONTIGUOUS,
+            f"no four consecutive quarters of {plain} to sum into a trailing "
+            "year", metric)
+    return val, None
+
+
+def _pit_why(row: dict | None, metric: str) -> reasons.Abstention:
+    plain = metric.replace("_", " ")
+    if not row:
+        return reasons.Abstention(
+            reasons.INPUT_METRIC_ABSENT,
+            f"no {plain} figures in this company's filings", metric)
+    return reasons.Abstention(
+        reasons.NONPOSITIVE_DENOMINATOR, f"{plain} is reported as zero", metric)
+
+
+def _margin_why(norm: dict, num_metric: str) -> reasons.Abstention:
+    plain = num_metric.replace("_", " ")
+    rev = at(norm, "revenue")
+    if not rev or rev["value"] == 0:
+        return _pit_why(rev, "revenue")
+    if not series(norm, num_metric, "Q"):
+        return reasons.Abstention(
+            reasons.INPUT_METRIC_ABSENT,
+            f"no quarterly {plain} figures in this company's filings", num_metric)
+    return reasons.Abstention(
+        reasons.PERIOD_MISALIGNED,
+        f"no {plain} figure for the same quarter as the latest revenue",
+        num_metric)
+
+
+def _gross_margin_why(norm: dict) -> reasons.Abstention:
+    rev = at(norm, "revenue")
+    if not rev or not rev["value"]:
+        return _pit_why(rev, "revenue")
+    if not series(norm, "gross_profit", "Q") and not series(norm, "cost_of_revenue", "Q"):
+        return reasons.Abstention(
+            reasons.INPUT_METRIC_ABSENT,
+            "neither gross profit nor cost of sales appears in this company's "
+            "filings", "gross_profit")
+    return reasons.Abstention(
+        reasons.PERIOD_MISALIGNED,
+        "no gross profit or cost of sales figure for the same quarter as the "
+        "latest revenue", "gross_profit")
+
+
 def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
     d = Diagnostics(ticker=ticker, cik=cik)
+
+    def note(name: str, why: reasons.Abstention | None) -> None:
+        # First reason wins: the most upstream cause is the one recorded.
+        if why is not None and name not in d.reasons:
+            d.reasons[name] = why.code
+            d.reason_detail[name] = why.detail
+
     rev_rows = series(norm, "revenue", "Q")
     rev = rev_rows[-1] if rev_rows else None
     if rev:
         d.period = rev["end"]
 
-    d.revenue_yoy = yoy_at(rev_rows, len(rev_rows) - 1)
-    d.revenue_yoy_prior = yoy_at(rev_rows, len(rev_rows) - 2)
+    # Gate-side YoY comparisons refuse a 14-week-vs-13-week span (the ~7%
+    # calendar artifact); label.py's calls keep the default and stay
+    # byte-identical. This changed which quarters evaluate, hence GATE_VERSION.
+    d.revenue_yoy, rev_yoy_why = _yoy_explained(
+        rev_rows, len(rev_rows) - 1, "revenue", require_comparable_span=True)
+    d.revenue_yoy_prior, prior_why = _yoy_explained(
+        rev_rows, len(rev_rows) - 2, "revenue", require_comparable_span=True)
     if d.revenue_yoy is not None and d.revenue_yoy_prior is not None:
         d.revenue_accel = d.revenue_yoy - d.revenue_yoy_prior
+    else:
+        note("revenue_accel", rev_yoy_why or prior_why)
 
-    d.ocf_yoy = yoy(norm, "operating_cash_flow", "Q")
-    d.deferred_rev_yoy = yoy(norm, "deferred_revenue", "PIT")
+    ocf_rows = series(norm, "operating_cash_flow", "Q")
+    d.ocf_yoy, ocf_yoy_why = _yoy_explained(
+        ocf_rows, len(ocf_rows) - 1, "operating_cash_flow",
+        require_comparable_span=True)
+    def_rows = series(norm, "deferred_revenue", "PIT")
+    d.deferred_rev_yoy, def_why = _yoy_explained(
+        def_rows, len(def_rows) - 1, "deferred_revenue")
 
     # margins
     gp_now = _gross_profit(norm)
@@ -221,21 +371,30 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
         gp_prior, rev_prior = _gross_profit(norm, back=4), at(norm, "revenue", "Q", 4)
         if gp_prior is not None and rev_prior and rev_prior["value"]:
             d.gross_margin_delta_yoy = d.gross_margin - gp_prior / rev_prior["value"]
+    else:
+        note("gross_margin", _gross_margin_why(norm))
     d.op_margin = _margin(norm, "operating_income")
+    if d.op_margin is None:
+        note("op_margin", _margin_why(norm, "operating_income"))
 
     # quality of earnings -- all gated on a real TTM
-    ni_ttm, ocf_ttm, rev_ttm = (
-        ttm(norm, "net_income"),
-        ttm(norm, "operating_cash_flow"),
-        ttm(norm, "revenue"),
-    )
+    ni_ttm, ni_why = _ttm_explained(norm, "net_income")
+    ocf_ttm, ocf_ttm_why = _ttm_explained(norm, "operating_cash_flow")
+    rev_ttm, rev_ttm_why = _ttm_explained(norm, "revenue")
     assets = pit(norm, "total_assets")
     if ni_ttm is not None and ocf_ttm is not None and assets and assets["value"]:
         d.accrual_ratio = (ni_ttm - ocf_ttm) / assets["value"]
+    else:
+        note("accrual_ratio", ni_why or ocf_ttm_why or _pit_why(assets, "total_assets"))
     if ocf_ttm is not None and rev_ttm:
         d.ocf_to_revenue = ocf_ttm / rev_ttm
+    else:
+        note("ocf_to_revenue",
+             ocf_ttm_why or rev_ttm_why or _pit_why({"value": 0}, "revenue"))
     if d.revenue_yoy is not None and d.ocf_yoy is not None:
         d.cash_conversion_gap = d.revenue_yoy - d.ocf_yoy
+    else:
+        note("cash_conversion_gap", rev_yoy_why or ocf_yoy_why)
 
     # Working capital. A days-outstanding ratio divides a point-in-time balance
     # by a trailing flow, so the two must describe the same moment. ttm() checks
@@ -249,21 +408,47 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
         ar_p, rev_ttm_p = pit(norm, "receivables", 4), ttm(norm, "revenue", 4)
         if ar_p and rev_ttm_p and _aligned(ar_p, ttm_end(norm, "revenue", 4)):
             d.dso_delta_yoy = d.dso - (ar_p["value"] / rev_ttm_p * 365)
-    cor_ttm = ttm(norm, "cost_of_revenue")
+    elif not ar:
+        note("dso", _pit_why(ar, "receivables"))
+    elif rev_ttm is None or not rev_ttm:
+        note("dso", rev_ttm_why or _pit_why({"value": 0}, "revenue"))
+    else:
+        note("dso", reasons.Abstention(
+            reasons.PERIOD_MISALIGNED,
+            "the receivables balance and the trailing-year revenue it would "
+            "be divided by describe different moments", "receivables"))
+    cor_ttm, cor_ttm_why = _ttm_explained(norm, "cost_of_revenue")
     if inv and cor_ttm and _aligned(inv, ttm_end(norm, "cost_of_revenue")):
         d.dio = inv["value"] / cor_ttm * 365
         inv_p, cor_ttm_p = pit(norm, "inventory", 4), ttm(norm, "cost_of_revenue", 4)
         if inv_p and cor_ttm_p and _aligned(inv_p, ttm_end(norm, "cost_of_revenue", 4)):
             d.dio_delta_yoy = d.dio - (inv_p["value"] / cor_ttm_p * 365)
+    elif not inv:
+        note("dio", _pit_why(inv, "inventory"))
+    elif cor_ttm is None or not cor_ttm:
+        note("dio", cor_ttm_why or _pit_why({"value": 0}, "cost_of_revenue"))
+    else:
+        note("dio", reasons.Abstention(
+            reasons.PERIOD_MISALIGNED,
+            "the inventory balance and the trailing-year cost of sales it "
+            "would be divided by describe different moments", "inventory"))
 
-    ar_yoy = yoy(norm, "receivables", "PIT")
+    ar_rows = series(norm, "receivables", "PIT")
+    ar_yoy, ar_yoy_why = _yoy_explained(ar_rows, len(ar_rows) - 1, "receivables")
     if ar_yoy is not None and d.revenue_yoy is not None:
         d.receivables_vs_revenue = ar_yoy - d.revenue_yoy
-    inv_yoy = yoy(norm, "inventory", "PIT")
+    else:
+        note("receivables_vs_revenue", ar_yoy_why or rev_yoy_why)
+    inv_rows = series(norm, "inventory", "PIT")
+    inv_yoy, inv_yoy_why = _yoy_explained(inv_rows, len(inv_rows) - 1, "inventory")
     if inv_yoy is not None and d.revenue_yoy is not None:
         d.inventory_vs_revenue = inv_yoy - d.revenue_yoy
+    else:
+        note("inventory_vs_revenue", inv_yoy_why or rev_yoy_why)
     if d.deferred_rev_yoy is not None and d.revenue_yoy is not None:
         d.deferred_vs_revenue_gap = d.deferred_rev_yoy - d.revenue_yoy
+    else:
+        note("deferred_vs_revenue_gap", def_why or rev_yoy_why)
 
     # balance sheet
     cash, debt = pit(norm, "cash"), pit(norm, "total_debt")
@@ -271,10 +456,30 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
         d.net_debt = debt["value"] - cash["value"]
         if ocf_ttm and ocf_ttm > 0:
             d.net_debt_to_ttm_ocf = d.net_debt / ocf_ttm
+        else:
+            note("net_debt_to_ttm_ocf", ocf_ttm_why or reasons.Abstention(
+                reasons.NONPOSITIVE_DENOMINATOR,
+                "cash from operations over the trailing year is zero or "
+                "negative, so debt-to-cash has no meaning",
+                "operating_cash_flow"))
+    else:
+        note("net_debt_to_ttm_ocf", _pit_why(
+            cash if not cash else debt, "cash" if not cash else "total_debt"))
 
-    # FIX §3: a share-count move this large is a corporate action, not dilution
-    dil = yoy(norm, "diluted_shares", "Q")
-    d.dilution_yoy = None if dil is not None and abs(dil) > CORPORATE_ACTION_THRESHOLD else dil
+    # FIX §3: a share-count move this large is a corporate action, not dilution.
+    # No span guard here: a weighted-AVERAGE share count over 14 weeks
+    # estimates the same quantity as one over 13, so the extra week cancels.
+    dil_rows = series(norm, "diluted_shares", "Q")
+    dil, dil_why = _yoy_explained(dil_rows, len(dil_rows) - 1, "diluted_shares")
+    if dil is not None and abs(dil) > CORPORATE_ACTION_THRESHOLD:
+        d.dilution_yoy = None
+        note("dilution_yoy", reasons.Abstention(
+            reasons.CORPORATE_ACTION,
+            f"the share count moved {dil:+.0%} year over year -- a split, "
+            "listing or buyout, not gradual dilution", "diluted_shares"))
+    else:
+        d.dilution_yoy = dil
+        note("dilution_yoy", dil_why)
 
     # provenance rollup: how much of this reading rests on differenced YTD
     # figures rather than directly reported quarters
@@ -290,13 +495,24 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
 
 # ------------------------------------------------------------ peer anomaly
 
+# The one number peers.py builds its sets against. A constant rather than a
+# literal inside peer_z so the set builder and the statistic cannot drift on
+# what "enough peers" means.
+MIN_PEERS = 6
+
 
 def peer_z(diags: list[Diagnostics], field: str) -> dict[str, float]:
     """Robust cross-sectional z within a peer set. Uses median/MAD so one
-    blown-up peer does not swallow the whole distribution."""
+    blown-up peer does not swallow the whole distribution.
+
+    UNWIRED, PERMANENTLY, not "until a later phase": a peer overlay on a gate
+    that failed its own recall test cannot be evaluated, and suppression can
+    only remove fires when fires missed are what failed. peers.py builds and
+    measures the sets; nothing consumes them.
+    """
     vals = [(d.ticker, getattr(d, field)) for d in diags]
     vals = [(t, v) for t, v in vals if v is not None]
-    if len(vals) < 6:
+    if len(vals) < MIN_PEERS:
         return {}
     nums = [v for _, v in vals]
     mu = median(nums)

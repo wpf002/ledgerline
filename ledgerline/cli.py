@@ -18,12 +18,15 @@ Records:
     ledgerline runs                      the log of past scans and fetches
     ledgerline restatements              figures that companies later revised
     ledgerline provenance AAPL           which SEC filings a reading came from
+    ledgerline peers                     which companies have industry peers
+                                         to compare against (measured, unused)
 
 Research (the validation experiment; most are one-shot):
     build-cases, periods, split, commit-rule, calibrate, run-test, phase0-freeze
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 from datetime import date
@@ -32,6 +35,8 @@ import typer
 
 from . import backtest, edgar, ingest, render, restate, signals_v3
 from . import calibrate as calib
+from . import coverage as cov
+from . import peers as peer_mod
 from . import provenance as prov
 from . import status as phase0
 from . import universe as uni
@@ -123,34 +128,121 @@ def fetch(only: str = typer.Option(None, help="Fetch just these tickers, "
 
 
 @app.command()
-def check():
-    """Which watched companies can be assessed, and what is missing for the rest.
+def check(as_of: str = typer.Option(None, help="Check as of this date "
+                                    "(YYYY-MM-DD), using only figures filed "
+                                    "by then. Defaults to today."),
+          ticker: str = typer.Option(None, help="Full detail for one company "
+                                     "instead of the whole watchlist."),
+          limit: int = typer.Option(None, help="Stop after this many "
+                                    "companies -- a quick look while the full "
+                                    "list would be slow."),
+          persist: bool = typer.Option(True, "--persist/--no-persist",
+                                       help="Record the results in the local "
+                                            "database and write a report file "
+                                            "under reports/. On by default for "
+                                            "the whole-watchlist view."),
+          out: str = typer.Option(None, help="Directory for the report files. "
+                                             "Defaults to reports/.")):
+    """Which watched companies can be assessed, why the rest cannot be, and how
+    many of the thirteen measures each assessable company actually gets.
 
-    READY / CANNOT ASSESS follows the same rule the scanner uses: sales, cash
-    from operations and profit must each appear in at least 90% of quarters.
-    Other gaps only switch off individual measures, and are noted, not fatal.
+    Per company it shows READY or CANNOT ASSESS by the same rule the scanner
+    uses, then a summary: which measures are most often unavailable and why,
+    and how much a typical company's best possible score is compressed by
+    missing measures. Slow on a cold cache (one polite SEC download per
+    company); fast after `ledgerline fetch`. --ticker gives one company in
+    full detail and records nothing.
     """
-    conn = edgar.db()
-    rows = conn.execute("SELECT cik, ticker FROM universe ORDER BY ticker").fetchall()
-    conn.close()
-    if not rows:
+    if ticker:
+        cik = _resolve(ticker)
+        if not cik:
+            typer.echo(f"{ticker.upper()} is not on your watchlist. Add it first:")
+            typer.echo(f"  ledgerline watch --add {ticker.upper()}")
+            raise typer.Exit(1)
+        cutoff = as_of or date.today().isoformat()
+        fc = cov.filer_coverage(cik, ticker.upper(), edgar.normalize(cik), cutoff)
+        sic = edgar.sic_map()
+        ps = peer_mod.peer_set(cik, sic)
+        fc = dataclasses.replace(fc, peer_level=ps.level, peer_n=ps.n())
+        typer.echo(cov.render_filer(fc))
+        return
+
+    if not edgar.universe():
         _no_watchlist_exit()
-    for cik, ticker in rows:
-        norm = edgar.normalize(cik)
-        if not norm:
-            typer.echo(render.check_line(ticker, False, "no XBRL facts", []))
-            continue
-        rep = edgar.coverage_report(norm)
-        hard = [m for m in signals_v3.REQUIRED_COVERAGE
-                if m in rep and (not rep[m]["n"] or not rep[m]["scoreable"])]
-        soft = [m for m, c in rep.items()
-                if m not in signals_v3.REQUIRED_COVERAGE
-                and c["n"] and not c["scoreable"]]
-        reason = None
-        if hard:
-            detail = ", ".join(f"{m} {rep[m]['ratio']:.0%}" for m in hard)
-            reason = f"insufficient quarterly coverage: {detail}"
-        typer.echo(render.check_line(ticker, not hard, reason, soft))
+    # The verdict prints before any number -- this surface says what the tool
+    # can and cannot assess, which reads as the tool working.
+    typer.echo(phase0.banner())
+    typer.echo("")
+    dash = cov.build(as_of=as_of, limit=limit)
+    for fc in dash.filers:
+        typer.echo(render.check_line(
+            fc.ticker, fc.scoreable,
+            None if fc.scoreable else fc.detail,
+            sorted(m for m, c in fc.metrics.items()
+                   if m not in signals_v3.REQUIRED_COVERAGE
+                   and c.get("n") and not c.get("scoreable"))))
+    typer.echo("")
+    typer.echo(cov.render_text(dash))
+    if persist:
+        cov.persist(dash)
+        jpath, mpath = cov.write(dash, out_dir=out)
+        typer.echo("")
+        typer.echo(f"Recorded in the local database; report written to {mpath} "
+                   f"(and {jpath} for machines).")
+
+
+@app.command()
+def peers(ticker: str = typer.Option(None, help="Show one company's peer "
+                                                "group instead of the "
+                                                "overview.")):
+    """How many watched companies have enough same-industry peers to compare
+    against -- a measurement only. Nothing in the tool uses peer groups yet,
+    and nothing will until there is a way to test whether they help.
+
+    Groups are built from each company's SEC industry code, widening from the
+    exact industry to the broader group to the sector until at least 6 peers
+    are found. Industry codes are today's, not historical.
+    """
+    sic = edgar.sic_map()
+    if not sic:
+        _no_watchlist_exit()
+    if ticker:
+        cik = _resolve(ticker)
+        if not cik:
+            typer.echo(f"{ticker.upper()} is not on your watchlist. Add it first:")
+            typer.echo(f"  ledgerline watch --add {ticker.upper()}")
+            raise typer.Exit(1)
+        ps = peer_mod.peer_set(cik, sic)
+        if ps.level is None:
+            typer.echo(f"{ticker.upper()} has no usable peer group: "
+                       + ("the SEC's record does not say what industry it is in."
+                          if ps.reason == "UNKNOWN_SECTOR"
+                          else "too few watched companies share its industry, "
+                               "even at the broadest grouping."))
+            return
+        names = {v["cik"]: v["ticker"] for v in edgar.universe().values()}
+        depth = {4: "its exact industry", 3: "its broader industry group",
+                 2: "its sector"}[ps.level]
+        typer.echo(f"{ticker.upper()} has {ps.n()} comparable companies within "
+                   f"{depth}:")
+        listed = [names.get(c, c) for c in ps.members]
+        for i in range(0, len(listed), 10):
+            typer.echo("  " + " ".join(f"{t:7}" for t in listed[i:i + 10]))
+        typer.echo("(Measurement only -- nothing uses peer groups. Industry "
+                   "codes are today's, not historical.)")
+        return
+    census = peer_mod.ladder_census(peer_mod.peer_sets(sic))
+    total = sum(census.values())
+    typer.echo(f"Of {total} watched companies:")
+    typer.echo(f"  {census['4']:4} have at least 6 peers in their exact industry")
+    typer.echo(f"  {census['3']:4} only in their broader industry group")
+    typer.echo(f"  {census['2']:4} only in their sector")
+    typer.echo(f"  {census['none']:4} have no usable group at any level")
+    typer.echo(f"  {census['unknown_sector']:4} have no industry code on file")
+    typer.echo("")
+    typer.echo("Measurement only: nothing in the tool uses peer groups, and "
+               "nothing will until there is a way to test whether they help. "
+               "Industry codes are today's, not historical.")
 
 
 @app.command()

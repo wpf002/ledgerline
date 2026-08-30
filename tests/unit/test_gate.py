@@ -71,12 +71,15 @@ def test_thin_baseline_returns_none_rather_than_a_number():
 
 def test_short_history_is_unscoreable_not_zero():
     """v2 returned score 0.0 with gated_in False for a filer it could not
-    assess. That is indistinguishable from 'assessed, looks clean'."""
+    assess -- indistinguishable from 'assessed, looks clean'. The verdict field
+    fixed that; the JSON then still carried "score": 0.0 beside
+    "scoreable": false, which read as a clean bill of health to anyone scanning
+    for the number. An unscored filer has NO score."""
     norm = build_filer(quarters=16)
     res = signals_v3.evaluate("TEST", "0000000001", as_of="2017-06-01", norm=norm)
     assert res["scoreable"] is False
     assert "own-history" in res["reason"]
-    assert res["score"] == 0.0
+    assert res["score"] is None
 
 
 def test_long_history_is_scoreable():

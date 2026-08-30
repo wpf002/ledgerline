@@ -1,4 +1,4 @@
-.PHONY: help test lint fmt backfill validate clean
+.PHONY: help test lint fmt fetch run-test clean
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "%-12s %s\n",$$1,$$2}'
@@ -12,11 +12,11 @@ lint:      ## ruff + mypy
 fmt:       ## autoformat
 	ruff format . && ruff check --fix .
 
-backfill:  ## pull companyfacts for the configured universe
-	python -m ledgerline.cli backfill
+fetch:     ## download filing history for the watchlist
+	python -m ledgerline.cli fetch
 
-validate:  ## Phase 0 gate. Prints SHIP or KILL.
-	python -m ledgerline.cli validate --split holdout
+run-test:  ## score the sealed half against the committed pass mark
+	python -m ledgerline.cli run-test --split holdout
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov .coverage

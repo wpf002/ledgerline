@@ -177,7 +177,11 @@ class Verdict:
     cik: str
     as_of: str
     period: str | None = None
-    score: float = 0.0
+    # None until the filer is actually scored. The default used to be 0.0, so
+    # an unscoreable filer's JSON read "score": 0.0 next to "scoreable": false
+    # -- a reader scanning for the number saw a clean bill of health when the
+    # truth was "could not assess".
+    score: float | None = None
     gated_in: bool = False
     scoreable: bool = True
     reason: str | None = None

@@ -1,14 +1,33 @@
-# Ledgerline Signal
+# Ledgerline
 
-Deterministic detection of divergence between what a company says and what its
-filings show. Arithmetic on normalized SEC XBRL, with an LLM confined to
-narrating events it did not detect and cannot veto.
+Ledgerline reads companies' official filings to the SEC and looks for a company
+whose numbers have started behaving unlike that same company's own past. Not
+"is this number big" but "is this unusual for *them*". When something looks
+off it says so, shows the arithmetic, and links back to the filing the numbers
+came from.
 
-**Status: pre-validation.** The scoring layer has not passed a real test. See
-`FINDINGS.md` for why the existing backtest results do not support a build
-decision, and `ROADMAP.md` Phase 0 for the gate that has to clear first.
+**It does not work — yet.** On 30 August 2026 the detection method was scored
+once against a standard written down and committed to git before the test ran.
+It caught 28.7% of the deteriorations it was built to warn about; the bar it
+had set for itself was 60%. It also raised more false alarms than the crude
+one-line rule it had to beat. Two of six criteria failed, so the pre-registered
+answer is no. See the result table at the top of `ROADMAP.md`.
 
----
+What *is* solid is everything underneath: point-in-time discipline (the tool
+only ever uses figures that had actually been filed by the date it is asked
+about), a test set generated from the data rather than hand-picked, and a
+sealed test half scored exactly once. Every number is published, so anyone can
+check the failure.
+
+**Getting started:** see `docs/RUNNING.md`. The short version:
+
+```bash
+./bootstrap.sh                       # once: venv, packaging, git hooks
+# put a real contact address in .env  (the SEC requires one)
+ledgerline watch --add AAPL,MSFT
+ledgerline fetch
+ledgerline explain AAPL
+```
 
 ## Repo setup
 

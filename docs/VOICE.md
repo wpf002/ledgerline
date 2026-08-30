@@ -1,0 +1,10 @@
+# How Ledgerline talks to people
+
+Rules every user-facing string follows. A future contributor writes the same way.
+
+- Plain words first, the technical term in parentheses once. "Taking longer to get paid (days sales outstanding, DSO)" — never the reverse, and never the acronym alone. Each term gets its parenthetical the first time it appears in a given output, not every time.
+- Every line about a company is a sentence with a subject and a verb. `gated_in: true` and `SCOREABLE` are not answers. "FLAGGED — two measures broke this company's own pattern" and "Cannot assess: cash-flow figures are missing for 45% of quarters" are. If a person cannot tell from the words alone whether the news is good, bad, or neutral, the line is not finished.
+- Never print an internal identifier at a person. No snake_case field names, no SHOUTING_CONSTANTS, no Python tuples or dicts interpolated into prose, no SEC form codes or SIC ranges without their plain reading. Machine keys stay in `--json`; the terminal gets English. This is about what is PRINTED — do not rename functions or dataclass fields to satisfy it.
+- Every number carries its unit, its direction, and the bar it is being judged against. Not `0.287 (limit 0.6)` but `28.7% caught (needs to be at least 60%)`. If a threshold is a floor say "at least", if it is a ceiling say "at most". A column header that means "floor" on one row and "ceiling" on the next is a bug.
+- Any output that flags a company, or that could be read as the tool working, carries the failed-test line. One sentence, same wording everywhere: the method caught 29% of what it was built to catch against a target of 60%, tested 2026-08-30. Absence of a flag carries it too — a quiet result is not a clean bill of health from a detector that misses seven in ten.
+- An error says what happened, whether the user can do anything about it, and the exact next command to type. "universe is empty" is half a message; "No companies are being watched yet. Add some: ledgerline watch --add AAPL,MSFT" is the whole one. Where the code already computes the remedy (universe.scoreable_from gives the date a company becomes assessable), print it.

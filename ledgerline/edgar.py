@@ -53,8 +53,10 @@ def _throttle() -> None:
 def _require_ua() -> str:
     if not USER_AGENT or "@" not in USER_AGENT:
         raise RuntimeError(
-            "LEDGERLINE_UA must be set to a descriptive User-Agent containing a "
-            "working contact address. SEC blocks requests without one."
+            "The SEC requires every automated reader to identify itself with a "
+            "contact address, and blocks those that don't. Set LEDGERLINE_UA in "
+            ".env, e.g.\n"
+            '  LEDGERLINE_UA="Ledgerline research you@example.com"'
         )
     return USER_AGENT
 
@@ -84,7 +86,13 @@ def fetch(url: str, cache_key: str | None = None, retries: int = 3) -> bytes:
                     body = gzip.decompress(body)
         except urllib.error.HTTPError as exc:
             last_err = exc
-            if exc.code == 404:
+            # Any 4xx is a fact about the request, not a transient fault --
+            # retrying cannot fix it. This used to re-raise only 404, so SEC's
+            # 403 for a not-yet-published daily index (every weekend) looped
+            # through the retries and surfaced as a raw traceback that blamed
+            # the User-Agent. daily_index() catches HTTPError and treats it as
+            # "no list published today", which is the truth.
+            if 400 <= exc.code < 500:
                 raise
             time.sleep(2**attempt)
             continue

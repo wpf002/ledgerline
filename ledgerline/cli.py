@@ -22,6 +22,11 @@ Records:
                                          and permanently
     ledgerline peers                     which companies have industry peers
                                          to compare against (measured, unused)
+    ledgerline publish                   write every saved assessment to one
+                                         file other programs can read
+    ledgerline digest                    one run's results as a short text
+                                         report, written to a file
+    ledgerline contract-schema           the exact shape of a published entry
 
 Research (the validation experiment; most are one-shot):
     build-cases, periods, split, commit-rule, calibrate, run-test,
@@ -36,6 +41,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sys
 from datetime import date
 
@@ -48,6 +54,9 @@ from . import peers as peer_mod
 from . import provenance as prov
 from . import status as phase0
 from . import universe as uni
+from .api import contract
+from .api import digest as run_digest
+from .api import schema as api_schema
 from .validate import harness, retest
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -643,6 +652,78 @@ def signals_cmd(ticker: str = typer.Option(None, help="One company's saved "
                    "versions of the detector. Scores from different versions "
                    "must not be averaged together (--json shows each "
                    "entry's version).")
+
+
+@app.command()
+def publish(since_seq: int = typer.Option(0, help="Continue an earlier export: "
+                                                  "write only entries newer than "
+                                                  "this position (printed by the "
+                                                  "previous publish). 0 rewrites "
+                                                  "the whole file."),
+            out: str = typer.Option(None, help="File to write; defaults to "
+                                               "reports/feed/signals.jsonl.")):
+    """Write every saved assessment to one file, one JSON entry per line.
+
+    This is how other programs read Ledgerline: the local viewer in service/
+    reads this file, and so can anything else that speaks JSON. Every line
+    carries the record of the failed 2026-08-30 test inside it -- a program
+    cannot receive a score from this file without also receiving that fact.
+    Companies that could not be assessed are lines too, with the reason.
+    Nothing is uploaded or sent anywhere; this writes a local file.
+    """
+    path = out or contract.FEED_PATH
+    n, max_seq = contract.export_jsonl(path, since_seq=since_seq)
+    typer.echo(f"Wrote {n} entr{'y' if n == 1 else 'ies'} to {path} "
+               f"(now at position {max_seq}).")
+    typer.echo(f"To export only what comes next, later: "
+               f"ledgerline publish --since-seq {max_seq}")
+
+
+@app.command()
+def digest(run_id: str = typer.Option(None, help="Which run to report on; "
+                                                 "defaults to the most recent "
+                                                 "saved one."),
+           out: str = typer.Option(None, help="File to write; defaults to "
+                                              "reports/digest/<date>.txt.")):
+    """One run's results as a short text report, written to a file.
+
+    The report leads with the failed-test verdict, then how many companies
+    could and could not be assessed (and why not), then -- before any company
+    is named -- how many flags pure chance alone would have produced. Only
+    after that does it name the flagged companies. Nothing is emailed or sent
+    anywhere, deliberately: on the measured numbers, a flag is more often
+    wrong than right, so this writes a file and a person decides.
+    """
+    try:
+        d = run_digest.build(run_id)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    text = run_digest.render_text(d)
+    path = out or os.path.join("reports", "digest", f"{d['date']}.txt")
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text)
+    typer.echo(text)
+    typer.echo(f"Written to {path}. Nothing was sent anywhere.")
+
+
+@app.command(name="contract-schema")
+def contract_schema(out: str = typer.Option(None, help="File to write; defaults "
+                                                       "to service/"
+                                                       "signal.schema.json.")):
+    """Write the exact shape of a published entry as a JSON Schema file.
+
+    For programs (and people) consuming `ledgerline publish` output in other
+    languages: the schema marks the validation block as required, so a
+    conforming reader cannot accept a score without the record of the failed
+    test. Generated from the code, never edited by hand; a test fails if the
+    committed copy and the code disagree.
+    """
+    path = out or api_schema.SCHEMA_OUT
+    digest_hex = api_schema.write(path)
+    typer.echo(f"Wrote {path} (sha256 {digest_hex[:16]}...). Commit it; a "
+               "shape change fails the tests until this file is regenerated.")
 
 
 # ------------------------------------------------------- research / experiment

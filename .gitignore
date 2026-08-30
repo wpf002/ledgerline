@@ -13,6 +13,10 @@ build/
 *.egg-info/
 reports/*.json
 reports/*.html
+# projections of the append-only signal log; regenerable, and committing them
+# would create a second source of truth for an immutable history
+reports/feed/
+reports/digest/
 
 # universe snapshot is committed (reproducibility); run state is not
 scripts/backfill_state.json

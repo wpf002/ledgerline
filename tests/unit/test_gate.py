@@ -177,21 +177,41 @@ REGIMES = ["2014-16-energy", "2017-19-idiosyncratic", "2020-covid",
            "2021-22-growth-unwind"]
 
 
+QUARTERS = 20
+
+
 def _positives(n, lead=12, regimes=REGIMES):
-    return [harness.Outcome(f"P{i}", True, True, False, "2021-02-15", lead, 0.1, 20, [],
-                            regimes[i % len(regimes)]) for i in range(n)]
+    return [harness.Outcome(f"P{i}", True, True, False, "2021-02-15", lead, 0.1, QUARTERS, [],
+                            regimes[i % len(regimes)], 2) for i in range(n)]
 
 
-def _controls(n, n_firing):
-    return [harness.Outcome(f"C{i}", False, i < n_firing, False, None, None, 0.02, 20, [],
-                            "control") for i in range(n)]
+def _controls(n, n_firing, fires_each=1):
+    """`n_firing` controls fire `fires_each` times out of QUARTERS scoreable
+    quarters. The per-quarter FPR is what the rule gates on."""
+    return [harness.Outcome(f"C{i}", False, i < n_firing, False, None, None,
+                            (fires_each / QUARTERS) if i < n_firing else 0.0, QUARTERS, [],
+                            "control", fires_each if i < n_firing else 0) for i in range(n)]
 
 
 def test_verdict_kills_on_false_positive_rate():
-    v = harness.verdict(_positives(40) + _controls(200, 60))
+    # 60 of 200 controls firing 5 quarters each -> 300/4000 = 7.5% per quarter
+    v = harness.verdict(_positives(40) + _controls(200, 60, fires_each=5))
     assert v["verdict"] == "KILL"
-    assert not v["checks"]["false_positive_rate"]["pass"]
+    assert not v["checks"]["false_positive_rate_per_quarter"]["pass"]
     assert v["checks"]["median_lead_months"]["pass"]
+
+
+def test_false_positive_rate_is_measured_per_quarter_not_per_filer():
+    """"<=10% of controls ever fire" silently demanded a 0.24% per-quarter rate,
+    because controls average ~43 scoreable cutoffs. The rule now gates on the
+    per-quarter rate and reports the per-filer one alongside."""
+    # every control fires exactly once in 20 quarters -> 5% per quarter, but
+    # 100% of filers "ever fired"
+    v = harness.verdict(_positives(40) + _controls(200, 200, fires_each=1))
+    assert v["checks"]["false_positive_rate_per_quarter"]["value"] == 0.05
+    assert v["checks"]["false_positive_rate_per_quarter"]["pass"]
+    assert v["false_positive_rate_per_filer"] == 1.0
+    assert v["control_filer_quarters"] == 4000
 
 
 def test_verdict_kills_on_insufficient_regime_coverage():
@@ -200,7 +220,7 @@ def test_verdict_kills_on_insufficient_regime_coverage():
     v = harness.verdict(_positives(40, regimes=["2021-22-growth-unwind"]) + _controls(200, 5))
     assert v["verdict"] == "KILL"
     assert not v["checks"]["regime_coverage"]["pass"]
-    assert v["checks"]["false_positive_rate"]["pass"]
+    assert v["checks"]["false_positive_rate_per_quarter"]["pass"]
 
 
 def test_verdict_kills_on_sample_size():

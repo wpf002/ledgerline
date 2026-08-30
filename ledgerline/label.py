@@ -220,11 +220,29 @@ def label(ticker: str, cik: str, norm: dict, as_of: str) -> Label:
     return out
 
 
-def first_deterioration(ticker: str, cik: str, norm: dict) -> str | None:
-    """Scan the whole history and return the first period where deterioration
-    trips, as YYYY-MM. This is what makes the positive set generatable across
-    the universe instead of hand-curated from eight remembered blowups."""
+def first_deterioration(ticker: str, cik: str, norm: dict,
+                        not_before: str | None = None) -> str | None:
+    """The first period where deterioration trips, as YYYY-MM.
+
+    This is what makes the positive set generatable across the universe instead
+    of hand-curated from eight remembered blowups.
+
+    `not_before` is the filer's first scoreable cutoff. Deterioration that
+    became public at or before that date is skipped, because the gate could not
+    have been asked about it -- and returning it anyway got the filer REJECTED
+    by universe.admit(), discarding every later break it did have. On the S&P
+    1500 that dropped 228 filers, and it dropped them selectively: the ones
+    whose trouble came early. A filer that broke in 2012 and again in 2020 is a
+    perfectly good 2020 positive.
+
+    Comparison is on the tripping quarter's FILING date, not its period end,
+    matching how universe.admit() gates and how lead time is measured.
+    """
     for r in signals.series(norm, "revenue", "Q"):
+        if not_before:
+            public = broke_date_filed(norm, r["end"]) or ""
+            if public <= not_before:
+                continue
         hits = [c for c in (fn(norm, r["end"]) for fn in CRITERIA) if c is not None]
         if len(hits) >= MIN_CRITERIA:
             return r["end"][:7]

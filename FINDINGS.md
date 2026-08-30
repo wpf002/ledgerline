@@ -128,3 +128,69 @@ arithmetic on a broken series.
 So the sequence is: fix derivation → rebuild the validation harness with a real
 control group and a pre-registered decision rule → *then* decide whether there
 is a product. See `ROADMAP.md`. Phase 0 has a documented kill condition.
+
+---
+
+## 5. Found during the build: point-in-time was inverted by the vintage collapse
+
+Added 2026-08-30, after standing the project up and backfilling the S&P 1500.
+This is a NEW defect, not part of the original audit, and it sat underneath
+the §3 fix rather than being addressed by it.
+
+`normalize()` collapsed each period end to a single fact. `derive._keep_prior`
+resolved ties by concept rank, then by most recent `filed` -- "restatements
+supersede originals." Combined with truncation on `filed`, that inverts the
+invariant the README opens with.
+
+ABT's Q1 2012, straight out of `companyfacts`:
+
+```
+filed 2012-05-08  10-Q  $9,456,633,000   <- what the market actually saw
+filed 2013-05-08  10-Q  $5,283,685,000   <- restated, AbbVie spin-off
+filed 2014-02-21  10-K  $5,284,000,000   <- the row that survived
+```
+
+The surviving row carried `filed=2014-02-21`. So:
+
+1. **Original disclosures disappeared.** `as_of("2012-08-15")` returned nothing
+   for that quarter, though it had been public since May 2012. ABT's 73 revenue
+   quarters collapsed to 33 distinct filing dates, which is why
+   `signals_v3._history()` reported "6q of 12" for a filer that has filed every
+   quarter since 2011.
+2. **Baselines used restated figures.** §3 diagnosed exactly this and fixed the
+   truncation *key* -- `filed` rather than period `end`. But the row that
+   survived the dedupe was still the restatement, so the fix was incomplete in
+   a way the tests could not see, because they never fed the same period twice.
+
+Measured over 150 backfilled filers:
+
+| | before | after |
+|---|---|---|
+| gap between `universe.scoreable_from()` and the first cutoff `evaluate()` can score | median **+56 months** | −12 months |
+| scoreable cutoffs per filer | 21–41 of 84 | median **50** of 84 |
+| filers reaching `2014-16-energy` | 28% | 87% |
+| filers reaching `2017-19-idiosyncratic` | 51% | 93% |
+
+The failure direction matters: it **hid** data rather than leaking it, so no
+published number was ever wrong and there was no lookahead. But `admit()` used
+`scoreable_from()` while scoring used `evaluate()`, and those disagreed by
+nearly five years -- so admission was letting in positives whose break date the
+gate provably could not reach, and the three earliest regimes were structurally
+unreachable. A Phase 0 run on this would have produced a bad verdict for a
+reason that has nothing to do with whether the signal exists.
+
+**Fix.** A fact is a sequence of vintages, not a value. Every vintage is
+retained; the row exposes the latest (labels may look forward, and restatement
+is itself one of the five deterioration criteria); `edgar.as_of()` rewinds each
+row to the newest vintage filed on or before the cutoff. `derive.newest_at()`
+is the selection primitive. A derived quarter gets a vintage wherever either of
+its two YTD inputs moved. `tests/unit/test_vintages.py` pins the behaviour in
+both directions -- no restated value leaks backwards, and no quarter stays
+hidden after its original filing.
+
+**Standing lesson.** The §3 finding was correct and the fix was applied to the
+right function. What made it incomplete is that the defect had two halves in
+two modules, and the test fixtures never reported the same period twice, so a
+half-fix looked total. Fixture realism is load-bearing here.
+
+---

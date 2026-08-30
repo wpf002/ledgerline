@@ -11,9 +11,27 @@ Everything from the audit through ship, in order.
 **Phase 0 is a gate, not a milestone.** If it fails, nothing after it gets
 built. The kill condition is committed before the test runs.
 
-Status: **55 tests passing**, no network required. Fixtures are synthetic
+Status: **74 tests passing**, no network required. Fixtures are synthetic
 XBRL-shaped payloads; each test reproduces a specific documented bug or
 enforces a specific decision.
+
+**Build log, 2026-08-30.** Infrastructure bootstrapped, S&P 1500 universe set
+(1503 of 1504 tickers resolved to a CIK), companyfacts backfilled for all of
+them -- 1496 with XBRL facts, 2 without, 0 errors.
+
+Two things came out of that pull:
+
+- Phase 0a's headline check passes on real filings. Operating cash flow now
+  covers 86-100% of each filer's revenue quarters, with roughly three quarters
+  of every OCF series existing only because `derive.py` differences the YTD
+  cumulatives. The residual reported-only counts land at 17-19 per filer over
+  ~19 years -- exactly the two-per-fiscal-year signature FINDINGS §2 documented.
+- A new defect, written up as FINDINGS §5: `normalize()` kept only the most
+  recently filed vintage of each period, so `as_of()` hid original disclosures
+  and served restated figures. It failed safe, but it delayed first
+  scoreability by a median of 56 months and made the three earliest regimes
+  structurally unreachable. Fixed before generating any case set, since Phase 0
+  numbers computed on it would have been wrong in the pessimistic direction.
 
 ---
 

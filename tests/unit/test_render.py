@@ -113,7 +113,7 @@ def test_fetch_gives_up_immediately_on_client_errors(monkeypatch, tmp_path):
 def test_daily_index_treats_403_as_no_list_published(monkeypatch):
     """The weekend handler exists in daily_index; the old fetch() made it
     unreachable."""
-    def raise_403(url, cache_key=None, retries=3):
+    def raise_403(url, cache_key=None, retries=3, refresh=False):
         raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
 
     monkeypatch.setattr(edgar, "fetch", raise_403)

@@ -108,7 +108,7 @@ def test_submissions_is_cached_by_cik(tmp_path, monkeypatch):
     """Uncached, this file was refetched once per filer per run."""
     seen = []
 
-    def fake_fetch(url, cache_key=None, retries=3):
+    def fake_fetch(url, cache_key=None, retries=3, refresh=False):
         seen.append(cache_key)
         return json.dumps({"sic": "3674"}).encode()
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 
 import pytest
 
@@ -209,24 +208,31 @@ def test_score_command_stamps_the_json_and_keeps_stdout_pipeable(
 
 
 def test_scan_prints_the_banner_before_the_first_result_line(
-        capsys, monkeypatch):
+        capsys, monkeypatch, tmp_path):
     """A feed that leads with flags and buries the failed test is an alert
-    with a disclaimer. The verdict prints first, and the payload behind every
-    printed line is stamped (stamp mutates, so the reference proves it)."""
+    with a disclaimer. With --score the verdict prints first, and the payload
+    behind every printed line is stamped (stamp mutates, so the reference
+    proves it)."""
+    from ledgerline import ingest
+
+    monkeypatch.setattr(edgar, "DATA", str(tmp_path))
+    monkeypatch.setattr(edgar, "DB_PATH", str(tmp_path / "state.db"))
     res = _verdict()
-    monkeypatch.setattr(edgar, "detect_changes",
-                        lambda days_back=1: [{"ticker": "T", "cik": "0000000001"}])
-    monkeypatch.setattr(signals_v3, "evaluate", lambda *a, **k: res)
-
-    def _mem_db():
-        conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE runs (run_date TEXT PRIMARY KEY, scanned INT,"
-                     " changed INT, scored INT, gated_in INT, started_at TEXT,"
-                     " finished_at TEXT)")
-        return conn
-
-    monkeypatch.setattr(edgar, "db", _mem_db)
-    cli.scan(days_back=1)
+    _watch_one(monkeypatch)
+    monkeypatch.setattr(
+        edgar, "daily_index",
+        lambda d, refresh=False: [{"form": "10-Q", "name": "T Inc",
+                                   "cik": "0000000001",
+                                   "filing_date": "2026-08-28", "file": "x",
+                                   "accession": "acc-1"}])
+    monkeypatch.setattr(
+        ingest, "ingest_filer",
+        lambda cik, run_id, counters, refresh=False: {
+            "cik": cik, "status": "ok", "rows": 1, "metrics": 1,
+            "restatements": 0, "low_coverage": []})
+    monkeypatch.setattr(signals_v3, "evaluate",
+                        lambda *a, **k: status.stamp(res))
+    cli.scan(days_back=1, as_of=None, score=True, refresh=False)
     out = capsys.readouterr().out
     assert out.index("NOT VALIDATED") < out.index("FLAGGED")
     status.assert_stamped(res)

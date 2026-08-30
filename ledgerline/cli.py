@@ -10,9 +10,14 @@ Daily use:
     ledgerline watch --add AAPL,MSFT     choose which companies to watch
     ledgerline fetch                     download their filing history from the SEC
     ledgerline check                     which of them can be assessed, and why not
-    ledgerline scan                      read today's filings, flag anything unusual
+    ledgerline scan                      read today's filings, keep the numbers current
     ledgerline explain AAPL              one company, in plain words
     ledgerline status                    what is set up, what the last test said
+
+Records:
+    ledgerline runs                      the log of past scans and fetches
+    ledgerline restatements              figures that companies later revised
+    ledgerline provenance AAPL           which SEC filings a reading came from
 
 Research (the validation experiment; most are one-shot):
     build-cases, periods, split, commit-rule, calibrate, run-test, phase0-freeze
@@ -21,12 +26,13 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date, datetime
+from datetime import date
 
 import typer
 
-from . import backtest, edgar, render, signals_v3
+from . import backtest, edgar, ingest, render, restate, signals_v3
 from . import calibrate as calib
+from . import provenance as prov
 from . import status as phase0
 from . import universe as uni
 from .validate import harness
@@ -72,29 +78,47 @@ def watch(add: str = typer.Option(None, help="Stock tickers to start watching, "
 
 
 @app.command()
-def fetch():
+def fetch(only: str = typer.Option(None, help="Fetch just these tickers, "
+                                              "e.g. AAPL,MSFT."),
+          refresh: bool = typer.Option(False, "--refresh/--no-refresh",
+                                       help="Re-download filing histories even "
+                                            "when a copy is already on disk. Use "
+                                            "after a company files something new."),
+          limit: int = typer.Option(None, help="Stop after this many companies."),
+          resume: bool = typer.Option(True, "--resume/--no-resume",
+                                      help="Skip companies already fetched "
+                                           "successfully. On by default.")):
     """Download every watched company's filing history from the SEC.
 
     Slow the first time (one request per company, politely throttled); nearly
-    instant after that, because accepted filings never change and are cached
-    forever. Run `ledgerline check` next.
+    instant after that, because finished downloads are kept and skipped. If it
+    stops partway, run it again -- it picks up where it left off. Run
+    `ledgerline check` next.
     """
-    u = edgar.universe()
-    if not u:
+    if not edgar.universe():
         _no_watchlist_exit()
-    for cik, meta in u.items():
-        norm = edgar.normalize(cik)
-        if not norm:
-            typer.echo(f"  {meta['ticker']:6} no machine-readable filings at the SEC")
-            continue
-        n = edgar.persist_metrics(cik, norm)
-        cov = edgar.coverage_report(norm)
-        bad = sorted(m for m, c in cov.items() if c["n"] and not c["scoreable"])
-        note = ""
-        if bad:
-            note = ("  (gaps in " + ", ".join(render.plain_metric(m) for m in bad)
-                    + " -- `ledgerline check` has details)")
-        typer.echo(f"  {meta['ticker']:6} {n:5} quarterly figures stored{note}")
+    tickers = [t.strip() for t in only.split(",")] if only else None
+    out = ingest.backfill(only=tickers, refresh=refresh, limit=limit,
+                          resume=resume)
+    for f in out["filers"]:
+        if f["status"] == "no_facts":
+            typer.echo(f"  {f['ticker']:6} no machine-readable filings at the SEC")
+        elif f["status"] == "error":
+            typer.echo(f"  {f['ticker']:6} could not fetch ({f['error']}) -- "
+                       "run `ledgerline fetch` again to retry")
+        else:
+            note = ""
+            if f["low_coverage"]:
+                note = ("  (gaps in "
+                        + ", ".join(render.plain_metric(m) for m in f["low_coverage"])
+                        + " -- `ledgerline check` has details)")
+            typer.echo(f"  {f['ticker']:6} {f['rows']:5} quarterly figures stored{note}")
+    c = out["counters"]
+    if not out["filers"]:
+        typer.echo("Everything is already fetched. Use --refresh to re-download, "
+                   "or --no-resume to start over.")
+    typer.echo(f"Downloaded {c['requests']} file{'s' if c['requests'] != 1 else ''} "
+               f"from the SEC; {c['cache_hits']} came free from the local copy.")
     typer.echo("Next: ledgerline check")
 
 
@@ -131,59 +155,89 @@ def check():
 
 @app.command()
 def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
-                                               "lists to catch up on.")):
-    """Read the SEC's daily filing list and assess watched companies that filed.
+                                               "lists to catch up on."),
+         as_of: str = typer.Option(None, help="Scan the filing lists ending on "
+                                              "this date (YYYY-MM-DD) instead "
+                                              "of today."),
+         score: bool = typer.Option(False, "--score/--no-score",
+                                    help="Also assess each company that filed. "
+                                         "Off by default: the detector failed "
+                                         "its own test on 2026-08-30, so its "
+                                         "verdicts are opt-in, not a daily "
+                                         "feed."),
+         refresh: bool = typer.Option(True, "--refresh/--no-refresh",
+                                      help="Re-download the filing history of "
+                                           "each company that filed, so today's "
+                                           "filing is actually in the data. On "
+                                           "by default.")):
+    """Read the SEC's daily filing list and keep watched companies up to date.
 
-    One request fetches every filing accepted market-wide that day; anything
-    from your watchlist is scored. Most days nothing fires -- that is normal.
+    One request fetches every filing accepted market-wide that day. Companies
+    from your watchlist that filed get their numbers re-downloaded and any
+    revised past figures are recorded (`ledgerline restatements` lists them).
+    Most days nothing happens -- that is normal, and the run is logged either
+    way (`ledgerline runs`). Add --score to also assess each filer.
     """
-    started = datetime.utcnow().isoformat()
-    hits = edgar.detect_changes(days_back=days_back)
-    if not hits:
-        if date.today().weekday() >= 5:
+    if not edgar.universe():
+        _no_watchlist_exit()
+    if score:
+        # The verdict prints BEFORE the first result line. A feed that leads
+        # with flags and buries the failed test is an alert with a disclaimer.
+        typer.echo(phase0.banner())
+        typer.echo("")
+    out = ingest.scan(days_back=days_back, as_of=as_of, score=score,
+                      refresh=refresh)
+    if not out["filers"]:
+        if out["index_rows"] == 0 and date.today().weekday() >= 5:
             typer.echo("The SEC publishes no filing list at weekends or on "
                        "holidays, so there is nothing to check today.")
         else:
             typer.echo(f"No new filings from your watched companies in the last "
                        f"{days_back} day{'s' if days_back != 1 else ''}. "
                        "That is normal on most days.")
+        typer.echo("The run is logged either way: ledgerline runs")
         return
 
-    # The verdict prints BEFORE the first result line. A feed that leads with
-    # flags and buries the failed test is an alert with a disclaimer.
-    typer.echo(phase0.banner())
-    typer.echo("")
-    scored, gated = 0, 0
-    today = date.today().isoformat()
-    for h in hits:
-        res = phase0.stamp(signals_v3.evaluate(h["ticker"], h["cik"], as_of=today))
-        if not res["scoreable"]:
-            typer.echo(f"  {h['ticker']:6} cannot assess -- "
-                       f"{render.plain_reason(res['reason'])}")
-            continue
-        scored += 1
-        gated += int(res["gated_in"])
-        mark = "FLAGGED" if res["gated_in"] else "ok     "
-        names = ", ".join(render.PLAIN.get(f["code"].lower(), (f["code"],))[0]
-                          for f in res["flags"])
-        typer.echo(f"  {mark} {h['ticker']:6} score {res['score']:5.1f} of 100"
-                   + (f"  ({names})" if names else ""))
+    c = out["counters"]
+    for f in out["filers"]:
+        forms = ", ".join(f["forms"])
+        if f["status"] == "error":
+            typer.echo(f"  {f['ticker']:6} filed ({forms}) but the download "
+                       f"failed -- the next scan will retry it")
+        elif f["status"] == "recorded":
+            typer.echo(f"  {f['ticker']:6} filed ({forms}) -- noted; this kind "
+                       "of filing carries no quarterly figures")
+        else:
+            n = f.get("restatements", 0)
+            note = (f"; {n} past figure{'s' if n != 1 else ''} revised"
+                    if n else "")
+            typer.echo(f"  {f['ticker']:6} filed ({forms}) -- figures "
+                       f"updated{note}")
 
-    conn = edgar.db()
-    with conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO runs "
-            "(run_date, scanned, changed, scored, gated_in, started_at, finished_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (today, len(hits), len(hits), scored, gated, started,
-             datetime.utcnow().isoformat()),
-        )
-    conn.close()
-    typer.echo(f"\nAssessed {scored} compan{'y' if scored == 1 else 'ies'}; "
-               f"{gated} flagged.")
-    if gated:
-        typer.echo(render.CAVEAT)
-    typer.echo("Details for any company: ledgerline explain TICKER")
+    if score:
+        typer.echo("")
+        for res in out["results"]:
+            if not res["scoreable"]:
+                typer.echo(f"  {res['ticker']:6} cannot assess -- "
+                           f"{render.plain_reason(res['reason'])}")
+                continue
+            mark = "FLAGGED" if res["gated_in"] else "ok     "
+            names = ", ".join(render.PLAIN.get(f["code"].lower(), (f["code"],))[0]
+                              for f in res["flags"])
+            typer.echo(f"  {mark} {res['ticker']:6} score {res['score']:5.1f} "
+                       "of 100" + (f"  ({names})" if names else ""))
+        typer.echo(f"\nAssessed {c['scored']} "
+                   f"compan{'y' if c['scored'] == 1 else 'ies'}; "
+                   f"{c['gated_in']} flagged.")
+        if c["gated_in"]:
+            typer.echo(render.CAVEAT)
+        typer.echo("Details for any company: ledgerline explain TICKER")
+    else:
+        typer.echo(f"\nUpdated {c['filers_done']} "
+                   f"compan{'y' if c['filers_done'] == 1 else 'ies'}; "
+                   f"{c['restatements']} revised past "
+                   f"figure{'s' if c['restatements'] != 1 else ''} recorded. "
+                   "No assessment was made (use --score to assess).")
 
 
 @app.command()
@@ -231,20 +285,176 @@ def status():
                + ("" if u else "   (ledgerline watch --add ...)"))
     conn = edgar.db()
     n_metrics = conn.execute("SELECT COUNT(DISTINCT cik) FROM metrics").fetchone()[0]
-    last_run = conn.execute("SELECT run_date, scored, gated_in FROM runs "
-                            "ORDER BY run_date DESC LIMIT 1").fetchone()
+    last_run = conn.execute(
+        "SELECT started_at, status, filers_done, restatements, scored, gated_in "
+        "FROM job_runs WHERE job='scan' ORDER BY run_id DESC LIMIT 1").fetchone()
     conn.close()
     typer.echo(f"Fetched         {n_metrics} companies' filing histories"
                + ("" if n_metrics else "   (ledgerline fetch)"))
     if last_run:
-        typer.echo(f"Last scan       {last_run[0]}: {last_run[1]} assessed, "
-                   f"{last_run[2]} flagged")
+        started, st, done, rest, scored_n, gated = last_run
+        day = (started or "")[:10]
+        if st == "failed":
+            typer.echo(f"Last scan       {day}: stopped with an error "
+                       "(ledgerline runs has details)")
+        elif scored_n:
+            typer.echo(f"Last scan       {day}: {scored_n} assessed, "
+                       f"{gated} flagged")
+        else:
+            typer.echo(f"Last scan       {day}: {done} compan"
+                       f"{'y' if done == 1 else 'ies'} updated, "
+                       f"{rest} revised figure{'s' if rest != 1 else ''}")
     else:
         typer.echo("Last scan       never   (ledgerline scan)")
     typer.echo("")
     # Generated from the committed record, never typed here: a second copy of
     # the result in a string literal is a copy that drifts.
     typer.echo(phase0.banner())
+
+
+@app.command()
+def runs(job: str = typer.Option(None, help="Show only one kind of run: "
+                                            "scan or backfill."),
+         limit: int = typer.Option(20, help="How many recent runs to show.")):
+    """The log of every scan and fetch: when it ran, what it cost, what it found.
+
+    A quiet day appears as a row too -- thousands of filings read, none from
+    your watchlist -- which is what proves the daily check stays cheap no
+    matter how many companies you watch.
+    """
+    rows = ingest.run_log(job=job, limit=limit)
+    if not rows:
+        typer.echo("No runs recorded yet. A scan or fetch writes one:")
+        typer.echo("  ledgerline scan")
+        return
+    for r in rows:
+        day = (r["started_at"] or "")[:16].replace("T", " ")
+        if r["status"] == "failed":
+            first_line = (r["error"] or "").splitlines()[0] if r["error"] else ""
+            typer.echo(f"  {day}  {r['job']:8} stopped with an error: "
+                       f"{first_line}")
+            continue
+        if r["status"] == "running":
+            typer.echo(f"  {day}  {r['job']:8} still running (or interrupted "
+                       "-- a later run will say so)")
+            continue
+        cost = (f"{r['requests']} download{'s' if r['requests'] != 1 else ''}, "
+                f"{r['cache_hits']} from local copies")
+        if r["job"] == "scan":
+            found = (f"read {r['index_rows']} filings market-wide, "
+                     f"{r['universe_hits']} from watched companies")
+        else:
+            found = (f"{r['filers_done']} compan"
+                     f"{'y' if r['filers_done'] == 1 else 'ies'} fetched, "
+                     f"{r['filers_failed']} failed")
+        extra = ""
+        if r["restatements"]:
+            extra += f"; {r['restatements']} revised past figures"
+        if r["scored"]:
+            extra += f"; {r['scored']} assessed, {r['gated_in']} flagged"
+        typer.echo(f"  {day}  {r['job']:8} {found}; {cost}{extra}")
+
+
+@app.command()
+def restatements(ticker: str = typer.Option(None, help="One company's revisions "
+                                                       "only."),
+                 since: str = typer.Option(None, help="Only revisions announced "
+                                                      "on or after this date "
+                                                      "(YYYY-MM-DD)."),
+                 material: bool = typer.Option(
+                     True, "--material/--all",
+                     help="--material (default) hides revisions under 1%; "
+                          "--all shows every recorded revision, however "
+                          "small.")):
+    """Past figures that a company later revised in a newer filing.
+
+    Detected by comparing each filing against what the same company reported
+    before -- not by waiting for a formally amended filing, which is how
+    fewer than 1 in 100 revisions actually arrive. Most revisions are tiny
+    (rounding, reclassification); the default view hides those under 1%.
+    """
+    cik = None
+    if ticker:
+        cik = _resolve(ticker)
+        if not cik:
+            typer.echo(f"{ticker.upper()} is not on your watchlist. Add it first:")
+            typer.echo(f"  ledgerline watch --add {ticker.upper()}")
+            raise typer.Exit(1)
+    rows = restate.events(cik=cik, since=since, material_only=material)
+    if not rows:
+        typer.echo("No revised figures recorded"
+                   + (f" for {ticker.upper()}" if ticker else "")
+                   + (" yet. They are collected as `ledgerline scan` and "
+                      "`ledgerline fetch` run." if material is False else
+                      ". Try --all to include revisions under 1%, or run "
+                      "`ledgerline fetch --refresh` to collect them."))
+        return
+    names = {v["cik"]: v["ticker"] for v in edgar.universe().values()}
+    for r in rows:
+        tick = names.get(r["cik"], r["cik"])
+        direction = "up" if r["value"] > r["prior_value"] else "down"
+        size = f"{r['rel_change']:.1%}"
+        note = " (in a formally amended filing)" if r["on_amendment"] else ""
+        typer.echo(f"  {tick:6} {render.plain_metric(r['metric'])} for the "
+                   f"period ending {r['end_date']}: revised {direction} "
+                   f"{size} on {r['filed']} (was {r['prior_value']:,.0f}, "
+                   f"now {r['value']:,.0f}){note}")
+    typer.echo(f"\n{len(rows)} revision{'s' if len(rows) != 1 else ''} shown"
+               + ("" if not material else
+                  " -- revisions under 1% are hidden (--all shows them)")
+               + ".")
+
+
+@app.command()
+def provenance(ticker: str,
+               as_of: str = typer.Option(None, help="Trace the reading as of "
+                                                    "this date (YYYY-MM-DD), "
+                                                    "using only figures filed "
+                                                    "by then.")):
+    """Where one company's numbers came from: the exact SEC filings behind them.
+
+    For each measure, shows whether the figure was reported directly, derived
+    by arithmetic from reported figures, or summed from components -- and the
+    SEC filing identifiers (accession numbers) to check. No score in this
+    output: where the numbers came from is true regardless of whether the
+    detector works.
+    """
+    cik = _resolve(ticker)
+    if not cik:
+        typer.echo(f"{ticker.upper()} is not on your watchlist. Add it first:")
+        typer.echo(f"  ledgerline watch --add {ticker.upper()}")
+        raise typer.Exit(1)
+    cutoff = as_of or date.today().isoformat()
+    norm = edgar.normalize(cik)
+    if not norm:
+        typer.echo(f"{ticker.upper()} has no machine-readable filings at the SEC.")
+        raise typer.Exit(1)
+    snap = edgar.as_of(norm, cutoff)
+    rev = snap.get("revenue")
+    if not rev:
+        typer.echo(f"{ticker.upper()} had no sales figures on file by {cutoff}, "
+                   "so there is nothing to trace at that date.")
+        raise typer.Exit(1)
+    period = rev[-1]["end"]
+    typer.echo(f"{ticker.upper()} as of {cutoff} -- latest quarter ends "
+               f"{period}. Each figure below names the SEC filings "
+               "(accession numbers) it came from.\n")
+    origins = {"reported": "reported directly",
+               "derived": "worked out by subtracting reported year-to-date "
+                          "figures",
+               "summed": "summed from reported components"}
+    for metric in sorted(snap):
+        t = prov.trace(snap, period, [metric])[metric]
+        if not t.get("sources"):
+            continue
+        how = origins.get(t.get("origin") or "", t.get("origin") or "unknown")
+        typer.echo(f"  {render.plain_metric(metric)}: {how}, filed "
+                   f"{t['filed']}, from " + ", ".join(t["sources"]))
+    typer.echo("\nHow much of this company's record is derived rather than "
+               "directly reported is normal to see: across measured filers "
+               "the typical share is about 29%, because most companies file "
+               "cash-flow figures cumulatively and quarters must be "
+               "subtracted out.")
 
 
 # ------------------------------------------------------- research / experiment

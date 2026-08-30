@@ -69,7 +69,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date
 from statistics import median
 
-from . import edgar
+from . import edgar, provenance, status
 from .signals import Diagnostics, diagnose, series
 
 # diagnostic -> (direction, weight, scale_floor)
@@ -180,6 +180,12 @@ class ZFlag:
     baseline_n: int
     floored: bool
     detail: str
+    # The accessions and filing date behind the current-quarter value that
+    # fired. The flag used to publish z and its baseline statistics with no
+    # way to find the filing -- the README's "a score traces back to
+    # accessions or it does not ship" was a promise the payload could not keep.
+    sources: list[str] = field(default_factory=list)
+    filed: str | None = None
 
 
 @dataclass
@@ -205,6 +211,13 @@ class Verdict:
     # the same numbers production computes rather than to a parallel
     # reimplementation that could drift from the gate.
     z: dict = field(default_factory=dict)
+    # Accession traces for the fired flags (provenance.reading_trace), the
+    # TRACED / PARTIAL / UNTRACED verdict on them, and -- when UNTRACED forces
+    # abstention -- why. All defaulted so asdict() carries them and every
+    # existing consumer keeps working untouched.
+    provenance: dict = field(default_factory=dict)
+    provenance_label: str = "TRACED"
+    abstain_reason: str | None = None
 
     def as_dict(self):
         return asdict(self)
@@ -279,35 +292,69 @@ def _coverage_gate(norm: dict) -> tuple[bool, str | None, dict]:
 # ------------------------------------------------------------------ evaluate
 
 
+def _current_trace(snap: dict, period: str | None,
+                   name: str) -> tuple[list[str], str | None]:
+    """(accessions, newest filed date) behind one diagnostic's current-quarter
+    inputs, straight off the as_of() snapshot so the citation is by
+    construction the vintage that was public at the cutoff."""
+    if not period:
+        return [], None
+    sources: list[str] = []
+    filed: str | None = None
+    for metric in DIAGNOSTIC_INPUTS.get(name, ()):
+        rows = [r for r in snap.get(metric, []) if r.get("end", "") <= period]
+        if not rows:
+            continue
+        row = rows[-1]
+        sources += [s for s in row.get("sources", []) if s]
+        f = row.get("filed")
+        if f and (filed is None or f > filed):
+            filed = f
+    deduped: list[str] = []
+    for s in sources:
+        if s not in deduped:
+            deduped.append(s)
+    return deduped, filed
+
+
 def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None = None) -> dict:
     """Score one filer as of a date.
 
     `as_of` defaults to today. Backtest and production call this identically --
     there is no separate backtest path, which is what makes a validated result
     transferable.
+
+    Every return is stamped by status.stamp() with the frozen Phase 0 KILL --
+    this is the single scoring surface, and the stamp is the enforcement point
+    for "no score is shown without the fact that it failed its own test".
     """
     cutoff = as_of or date.today().isoformat()
     full = norm if norm is not None else edgar.normalize(cik)
     if not full:
-        return Verdict(ticker, cik, cutoff, scoreable=False, reason="no XBRL facts").as_dict()
+        return status.stamp(
+            Verdict(ticker, cik, cutoff, scoreable=False,
+                    reason="no XBRL facts").as_dict())
 
     snap = edgar.as_of(full, cutoff)
     if not snap.get("revenue"):
-        return Verdict(ticker, cik, cutoff, scoreable=False,
-                       reason="no revenue facts filed as of cutoff").as_dict()
+        return status.stamp(
+            Verdict(ticker, cik, cutoff, scoreable=False,
+                    reason="no revenue facts filed as of cutoff").as_dict())
 
     ok, reason, cov = _coverage_gate(snap)
     if not ok:
-        return Verdict(ticker, cik, cutoff, scoreable=False, reason=reason,
-                       coverage=cov).as_dict()
+        return status.stamp(
+            Verdict(ticker, cik, cutoff, scoreable=False, reason=reason,
+                    coverage=cov).as_dict())
 
     current = diagnose(ticker, cik, snap)
     hist = _history(ticker, cik, full, cutoff)
     if len(hist) < MIN_HISTORY:
-        return Verdict(ticker, cik, cutoff, period=current.period, scoreable=False,
-                       reason=f"insufficient own-history ({len(hist)}q of {MIN_HISTORY})",
-                       coverage=cov, derived_fraction=current.derived_fraction,
-                       diagnostics=current.as_dict()).as_dict()
+        return status.stamp(
+            Verdict(ticker, cik, cutoff, period=current.period, scoreable=False,
+                    reason=f"insufficient own-history ({len(hist)}q of {MIN_HISTORY})",
+                    coverage=cov, derived_fraction=current.derived_fraction,
+                    diagnostics=current.as_dict()).as_dict())
 
     flags: list[ZFlag] = []
     all_z: dict[str, float] = {}
@@ -326,6 +373,7 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         all_z[name] = round(signed, 4)
         if signed < Z_TRIGGER:
             continue
+        srcs, src_filed = _current_trace(snap, current.period, name)
         flags.append(
             ZFlag(
                 code=name.upper(),
@@ -344,13 +392,15 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
                     + (" [scale floored]" if floored else "")
                     + "."
                 ),
+                sources=srcs,
+                filed=src_filed,
             )
         )
 
     raw = sum(f.weight * min(f.z / Z_TRIGGER, Z_CAP) for f in flags)
     score = round(min(raw / SCORE_DIVISOR * 100, 100), 1)
 
-    return Verdict(
+    verdict = Verdict(
         ticker=ticker,
         cik=cik,
         as_of=cutoff,
@@ -363,4 +413,29 @@ def evaluate(ticker: str, cik: str, as_of: str | None = None, norm: dict | None 
         flags=[asdict(f) for f in flags],
         diagnostics=current.as_dict(),
         z=all_z,
-    ).as_dict()
+    )
+    # The README invariant, enforced at the scoring surface: a fired flag that
+    # cannot cite a filing makes the reading UNTRACED and the gate abstains
+    # through its existing channel. Measured, 0 of 21,032 rows lack an
+    # accession, so this is a regression guard, not a filter.
+    verdict.provenance = provenance.reading_trace(snap, current.period,
+                                                  verdict.flags)
+    # derived_fraction is surfaced with the measured universe distribution
+    # beside it, never judged: derivation is the normal path (~3/4 of every
+    # OCF series exists only because derive.py differences YTD cumulatives),
+    # and the HIGH marker is a tripwire above the observed maximum, not a
+    # quality gate. It labels; it does not suppress.
+    verdict.provenance["derived_fraction"] = current.derived_fraction
+    verdict.provenance["derived_fraction_high"] = (
+        current.derived_fraction >= provenance.DERIVED_FRACTION_HIGH)
+    verdict.provenance["derived_fraction_observed"] = (
+        provenance.DERIVED_FRACTION_OBSERVED)
+    verdict.provenance_label, abstain = provenance.label(
+        verdict.provenance, current.derived_fraction)
+    if verdict.provenance_label == "UNTRACED":
+        verdict.scoreable = False
+        verdict.gated_in = False
+        verdict.score = None
+        verdict.reason = abstain
+        verdict.abstain_reason = abstain
+    return status.stamp(verdict.as_dict())

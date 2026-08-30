@@ -42,6 +42,20 @@ os.makedirs(CACHE, exist_ok=True)
 
 _last_call = [0.0]
 
+# Request accounting, read into the job_runs table per run. ROADMAP §10 gates
+# scaling on cost-flat-in-universe-size, and that needs a measured number per
+# run rather than an asserted one. Two counters and a byte count, no wrapper.
+STATS: dict[str, int] = {"requests": 0, "cache_hits": 0, "bytes_fetched": 0}
+
+
+def stats_reset() -> None:
+    for k in STATS:
+        STATS[k] = 0
+
+
+def stats() -> dict[str, int]:
+    return dict(STATS)
+
 
 def _throttle() -> None:
     delta = time.monotonic() - _last_call[0]
@@ -61,14 +75,19 @@ def _require_ua() -> str:
     return USER_AGENT
 
 
-def fetch(url: str, cache_key: str | None = None, retries: int = 3) -> bytes:
+def fetch(url: str, cache_key: str | None = None, retries: int = 3,
+          refresh: bool = False) -> bytes:
     """GET with throttle, gzip, and optional on-disk cache.
 
-    XBRL facts and archived filings are immutable once a filing is accepted, so
-    caching them is free correctness rather than a staleness risk.
+    A FACT is immutable once a filing is accepted; a DOCUMENT that aggregates
+    facts is not -- companyfacts grows with every filing, and today's daily
+    index is still being appended to. `refresh=True` skips the cache READ but
+    never the write, so a refetch replaces the stale copy and the next plain
+    read is free. Default False, so every existing caller is untouched.
     """
     path = os.path.join(CACHE, cache_key) if cache_key else None
-    if path and os.path.exists(path):
+    if path and os.path.exists(path) and not refresh:
+        STATS["cache_hits"] += 1
         with open(path, "rb") as fh:
             return fh.read()
 
@@ -77,6 +96,10 @@ def fetch(url: str, cache_key: str | None = None, retries: int = 3) -> bytes:
     for attempt in range(retries):
         try:
             _throttle()
+            # Counted per attempt, not per success: a 403 or a retry loop is
+            # still traffic the SEC sees, and the runs table is the place that
+            # number has to be honest.
+            STATS["requests"] += 1
             req = urllib.request.Request(
                 url, headers={"User-Agent": ua, "Accept-Encoding": "gzip, deflate"}
             )
@@ -101,6 +124,7 @@ def fetch(url: str, cache_key: str | None = None, retries: int = 3) -> bytes:
             time.sleep(2**attempt)
             continue
 
+        STATS["bytes_fetched"] += len(body)
         if path:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "wb") as fh:
@@ -110,8 +134,8 @@ def fetch(url: str, cache_key: str | None = None, retries: int = 3) -> bytes:
     raise RuntimeError(f"fetch failed: {url}: {last_err}")
 
 
-def fetch_json(url: str, cache_key: str | None = None) -> dict:
-    return json.loads(fetch(url, cache_key))
+def fetch_json(url: str, cache_key: str | None = None, refresh: bool = False) -> dict:
+    return json.loads(fetch(url, cache_key, refresh=refresh))
 
 
 # ---------------------------------------------------------------- state store
@@ -162,6 +186,12 @@ CREATE TABLE IF NOT EXISTS coverage (
     computed_at TEXT,
     PRIMARY KEY (cik, metric)
 );
+-- DEAD. Superseded by job_runs: the run_date PK meant a retry after a failure
+-- silently overwrote the record of the failure it was retrying, and `scanned`
+-- and `changed` were both written as len(hits), so the market-wide index count
+-- -- the number that demonstrates the Tier 0 cost claim -- was never stored.
+-- Left in place (0 rows) rather than dropped, so nothing in this shared schema
+-- string is destructive; drop it in a cleanup that touches nothing else.
 CREATE TABLE IF NOT EXISTS runs (
     run_date    TEXT PRIMARY KEY,
     scanned     INTEGER,
@@ -171,13 +201,132 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at  TEXT,
     finished_at TEXT
 );
+-- One row per job EXECUTION, not per day. requests/cache_hits/bytes_fetched
+-- exist because ROADMAP §10 gates scaling on cost-flat-in-universe-size, and
+-- that needs a measurement rather than an assertion. index_rows is the
+-- market-wide daily-index count; universe_hits the filtered one. A quiet day
+-- is a row with index_rows > 0 and universe_hits = 0 -- the old scan returned
+-- before writing anything, so the day the cost architecture is loudest about
+-- was the one day it left no evidence.
+CREATE TABLE IF NOT EXISTS job_runs (
+    run_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    job           TEXT NOT NULL,
+    as_of         TEXT,
+    status        TEXT NOT NULL,          -- running | ok | failed
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    requests      INTEGER DEFAULT 0,
+    cache_hits    INTEGER DEFAULT 0,
+    bytes_fetched INTEGER DEFAULT 0,
+    index_rows    INTEGER DEFAULT 0,
+    universe_hits INTEGER DEFAULT 0,
+    filers_done   INTEGER DEFAULT 0,
+    filers_failed INTEGER DEFAULT 0,
+    restatements  INTEGER DEFAULT 0,
+    scored        INTEGER DEFAULT 0,
+    gated_in      INTEGER DEFAULT 0,
+    error         TEXT
+);
+-- Replaces scripts/backfill_state.json, which lived outside the database, so
+-- `check` could not distinguish a filer never pulled from one pulled and
+-- holding no XBRL. facts_filed_max is the staleness key: a filer whose daily-
+-- index filing date is newer than the newest `filed` in its cached facts needs
+-- a refetch, which is how scan decides what to refresh rather than refreshing
+-- the universe.
+CREATE TABLE IF NOT EXISTS ingest_state (
+    cik             TEXT PRIMARY KEY,
+    status          TEXT NOT NULL,        -- ok | no_facts | error
+    last_run_id     INTEGER,
+    facts_filed_max TEXT,
+    rows            INTEGER,
+    metrics         INTEGER,
+    low_coverage    TEXT,
+    error           TEXT,
+    updated_at      TEXT
+);
+-- normalize() has carried the full vintage list on every row since FINDINGS §5
+-- and persist_metrics wrote only the newest, so nothing downstream of sqlite
+-- could tell a first publication from a revision. Measured cost: 1.08x the
+-- top-level row count -- the whole revision history for 8% more rows.
+CREATE TABLE IF NOT EXISTS vintages (
+    cik      TEXT,
+    metric   TEXT,
+    end_date TEXT,
+    kind     TEXT,
+    filed    TEXT,
+    value    REAL,
+    form     TEXT,
+    concept  TEXT,
+    origin   TEXT,
+    sources  TEXT,
+    PRIMARY KEY (cik, metric, end_date, kind, filed)
+);
+CREATE INDEX IF NOT EXISTS vintages_by_filed ON vintages (filed);
+-- The revision event, emitted rather than applied: the vintage it supersedes
+-- stays in `vintages` untouched. Detection is vintage-list GROWTH, not
+-- form = '/A' -- measured, only 6 of 624 revisions (0.96%) arrived on an
+-- amended form, so on_amendment is a flag on the event and not the trigger.
+-- `material` is a column and not a filter: 42.5% of measured revisions fall
+-- under 1% relative, and dropping them at write time destroys the denominator
+-- needed to say what fraction of restatements matter. The PK is the
+-- superseding vintage, which makes re-ingest idempotent for free.
+CREATE TABLE IF NOT EXISTS restatements (
+    cik          TEXT,
+    metric       TEXT,
+    end_date     TEXT,
+    kind         TEXT,
+    filed        TEXT,
+    prior_filed  TEXT,
+    prior_value  REAL,
+    value        REAL,
+    rel_change   REAL,
+    form         TEXT,
+    on_amendment INTEGER,
+    material     INTEGER,
+    detected_run INTEGER,
+    detected_at  TEXT,
+    PRIMARY KEY (cik, metric, end_date, kind, filed)
+);
+CREATE INDEX IF NOT EXISTS restatements_by_cik ON restatements (cik, end_date);
 """
+
+# Migrations, ordered and carried on PRAGMA user_version. CREATE TABLE IF NOT
+# EXISTS is a silent no-op against an existing table, so a column added inside
+# the SCHEMA string above would be read by the code and never created in the
+# live state.db on disk -- an ALTER here is the ONLY way a column is ever added.
+# Later phases append to MIGRATIONS; renumbering an existing step would make a
+# db migrated under one order silently skip another's step, so steps are
+# append-only too.
+SCHEMA_VERSION: int = 1
+
+
+def _migration_1(conn: sqlite3.Connection) -> None:
+    """filings.first_seen_run: which run first saw an accession. Combined with
+    detect_changes(record=False) + record_filings() after a filer ingests, this
+    fixes the resumability hole where a crash mid-run marked accessions known
+    and a rerun skipped them permanently."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(filings)")}
+    if "first_seen_run" not in cols:
+        conn.execute("ALTER TABLE filings ADD COLUMN first_seen_run INTEGER")
+
+
+MIGRATIONS: list = [_migration_1]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply outstanding migrations. Idempotent: user_version records progress."""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    for step, apply in enumerate(MIGRATIONS[version:], start=version + 1):
+        with conn:
+            apply(conn)
+            conn.execute(f"PRAGMA user_version = {step}")
 
 
 def db() -> sqlite3.Connection:
     os.makedirs(DATA, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
@@ -207,8 +356,17 @@ def set_universe(tickers: list[str]) -> list[dict]:
     missing = [t for t in tickers if t.upper() not in tmap]
     conn = db()
     with conn:
+        # ON CONFLICT DO UPDATE on the three columns actually supplied, never
+        # INSERT OR REPLACE: REPLACE deletes the whole row, which nulled the
+        # sic column on every re-run. With 1,496 of 1,498 universe rows
+        # carrying a SIC, one `watch --add` with a larger list would have
+        # nulled them all -- after which admission rejects unknown SIC and the
+        # next case build silently returns an empty set until 1,500
+        # submissions files are re-fetched.
         conn.executemany(
-            "INSERT OR REPLACE INTO universe (cik, ticker, name) VALUES (?,?,?)",
+            "INSERT INTO universe (cik, ticker, name) VALUES (?,?,?) "
+            "ON CONFLICT(cik) DO UPDATE SET ticker=excluded.ticker, "
+            "name=excluded.name",
             [(r["cik"], r["ticker"], r["name"]) for r in rows],
         )
     conn.close()
@@ -229,23 +387,36 @@ def universe() -> dict[str, dict]:
 TRACKED_FORMS = {"10-K", "10-Q", "8-K", "20-F", "10-K/A", "10-Q/A"}
 AMENDED_FORMS = {"10-K/A", "10-Q/A"}
 
+# Forms that can move a number. TRACKED_FORMS stays broader for change
+# detection (an 8-K is still a filing worth recording), but 8-Ks carry no XBRL
+# fundamentals and were 74% of two years' tracked-form hits -- once the
+# companyfacts cache is correctly invalidated, letting an 8-K trigger a ~3.4MB
+# refetch that cannot change any diagnostic is pure cost. This set gates the
+# refetch-and-assess path.
+PERIODIC_FORMS = {"10-K", "10-Q", "20-F", "10-K/A", "10-Q/A"}
+
 
 def _qtr(d: date) -> str:
     return f"QTR{(d.month - 1) // 3 + 1}"
 
 
-def daily_index(d: date) -> list[dict]:
+def daily_index(d: date, refresh: bool = False) -> list[dict]:
     """Every filing SEC accepted on date `d`, across all filers. ONE request.
 
     The core cost optimization: replaces N per-company polls with a single
     flat-file read, regardless of universe size.
+
+    `refresh` matters for TODAY's index, which is still being appended to as
+    the SEC accepts filings: a 10:00 scan that cached a partial copy would
+    otherwise pin the evening rerun to the morning's view. Past days' indexes
+    are complete and the cache is sound.
     """
     url = (
         f"https://www.sec.gov/Archives/edgar/daily-index/"
         f"{d.year}/{_qtr(d)}/form.{d.strftime('%Y%m%d')}.idx"
     )
     try:
-        raw = fetch(url, f"idx/form.{d.strftime('%Y%m%d')}.idx")
+        raw = fetch(url, f"idx/form.{d.strftime('%Y%m%d')}.idx", refresh=refresh)
     except urllib.error.HTTPError:
         return []  # weekend / holiday / not yet published
 
@@ -275,43 +446,78 @@ def daily_index(d: date) -> list[dict]:
     return out
 
 
-def detect_changes(days_back: int = 1, as_of: date | None = None) -> list[dict]:
+def known_accessions() -> set[str]:
+    conn = db()
+    known = {r[0] for r in conn.execute("SELECT accession FROM filings")}
+    conn.close()
+    return known
+
+
+def match_universe(rows: list[dict], uni: dict[str, dict],
+                   known: set[str]) -> list[dict]:
+    """The daily-index rows that are (a) in our universe, (b) a tracked form,
+    (c) not already recorded. One filter shared by detect_changes and
+    ingest.scan, so the two cannot drift on what counts as a hit."""
+    hits = []
+    for row in rows:
+        if row["cik"] not in uni or row["form"] not in TRACKED_FORMS:
+            continue
+        if row["accession"] in known:
+            continue
+        row["ticker"] = uni[row["cik"]]["ticker"]
+        row["is_amendment"] = row["form"] in AMENDED_FORMS
+        hits.append(row)
+    return hits
+
+
+def detect_changes(days_back: int = 1, as_of: date | None = None,
+                   record: bool = True) -> list[dict]:
     """Filings that are (a) in our universe, (b) a tracked form, (c) not already
     recorded. On a quiet day this returns [] and the caller exits before
-    anything downstream runs -- a near-zero-cost day."""
+    anything downstream runs -- a near-zero-cost day.
+
+    `record=False` detects without writing to `filings`. The old behaviour
+    wrote every hit before any work happened, so a crash mid-run marked
+    accessions known and a rerun skipped them permanently; ingest.scan records
+    a filing only after its filer's ingest succeeds, via record_filings().
+    """
     uni = universe()
     if not uni:
         return []
-    conn = db()
-    known = {r[0] for r in conn.execute("SELECT accession FROM filings")}
+    known = known_accessions()
 
     as_of = as_of or date.today()
     hits, scanned = [], 0
     for i in range(days_back):
-        for row in daily_index(as_of - timedelta(days=i)):
-            scanned += 1
-            if row["cik"] not in uni or row["form"] not in TRACKED_FORMS:
-                continue
-            if row["accession"] in known:
-                continue
-            row["ticker"] = uni[row["cik"]]["ticker"]
-            row["is_amendment"] = row["form"] in AMENDED_FORMS
-            hits.append(row)
+        rows = daily_index(as_of - timedelta(days=i))
+        scanned += len(rows)
+        hits += match_universe(rows, uni, known)
 
+    if record:
+        record_filings(hits)
+    print(f"  scanned {scanned} market-wide filings -> {len(hits)} in universe")
+    return hits
+
+
+def record_filings(hits: list[dict], run_id: int | None = None) -> int:
+    """Mark accessions as known. Called per filer AFTER that filer ingests, so
+    an accession is never marked done ahead of the work it triggers."""
+    if not hits:
+        return 0
+    conn = db()
     with conn:
         conn.executemany(
             "INSERT OR REPLACE INTO filings "
-            "(accession, cik, ticker, form, filing_date, period, primary_doc) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "(accession, cik, ticker, form, filing_date, period, primary_doc, "
+            " first_seen_run) VALUES (?,?,?,?,?,?,?,?)",
             [
-                (h["accession"], h["cik"], h["ticker"], h["form"], h["filing_date"],
-                 None, h["file"])
+                (h["accession"], h["cik"], h.get("ticker"), h["form"],
+                 h["filing_date"], None, h.get("file"), run_id)
                 for h in hits
             ],
         )
     conn.close()
-    print(f"  scanned {scanned} market-wide filings -> {len(hits)} in universe")
-    return hits
+    return len(hits)
 
 
 def submissions(cik: str) -> dict:
@@ -446,11 +652,23 @@ AVERAGED_FLOWS = {"diluted_shares"}
 ACCEPTED_FORMS = ("10-K", "10-Q", "20-F", "10-K/A", "10-Q/A")
 
 
-def companyfacts(cik: str) -> dict:
-    """Immutable per accepted filing -> cache permanently."""
+def companyfacts(cik: str, refresh: bool = False) -> dict:
+    """One filer's XBRL facts. Cached, but the cache is only sound until the
+    filer files again.
+
+    The old docstring said "immutable per accepted filing -> cache
+    permanently". True of a FACT, false of this DOCUMENT, which is a
+    per-company aggregate that grows with every filing. The consequence was a
+    live defect: scan detected a new 10-Q via the daily index, then scored the
+    facts file written at backfill time -- the filing that triggered the scan
+    was not in the data the scan scored. Callers that just learned the filer
+    filed (ingest.scan, backfill --refresh) pass refresh=True; everything else
+    reads the cache for free.
+    """
     return fetch_json(
         f"https://data.sec.gov/api/xbrl/companyfacts/CIK{pad(cik)}.json",
         f"facts/CIK{pad(cik)}.json",
+        refresh=refresh,
     )
 
 

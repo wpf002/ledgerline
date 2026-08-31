@@ -258,15 +258,27 @@ def test_digest_refuses_without_the_evidence_file(isolated_db, tmp_path,
 
 
 def test_service_uses_only_node_builtins():
-    """The user-ordered deviation's constraint, made executable: server.mjs
-    imports nothing but node: built-ins -- zero npm dependencies, nothing to
-    install, no supply chain. An import without the node: prefix fails here
-    before it fails a reviewer."""
-    with open(os.path.join(REPO, "service", "server.mjs")) as fh:
-        src = fh.read()
-    imports = re.findall(r'^\s*import\s.*?from\s+"([^"]+)"', src, re.M)
-    assert imports and all(m.startswith("node:") for m in imports)
-    assert "require(" not in src
+    """The user-ordered deviation's constraint, made executable: the service
+    imports nothing but node: built-ins and its own files -- zero npm
+    dependencies, nothing to install, no supply chain. A bare specifier fails
+    here before it fails a reviewer.
+
+    Every .mjs in service/ is checked, not only server.mjs: the viewer grew a
+    second module when it grew a second page, and a constraint that covered
+    one file would have stopped covering the program."""
+    service = os.path.join(REPO, "service")
+    for name in sorted(f for f in os.listdir(service) if f.endswith(".mjs")):
+        with open(os.path.join(service, name)) as fh:
+            src = fh.read()
+        imports = re.findall(r'^\s*import\s.*?from\s+"([^"]+)"', src, re.M)
+        for spec in imports:
+            # A relative path is a file in this directory; anything else is a
+            # package, which is the thing there is none of.
+            assert spec.startswith("node:") or spec.startswith("./"), \
+                f"{name} imports {spec}"
+            if spec.startswith("./"):
+                assert os.path.exists(os.path.join(service, spec[2:]))
+        assert "require(" not in src
     assert not os.path.exists(os.path.join(REPO, "service", "package.json"))
     assert not os.path.exists(os.path.join(REPO, "service", "node_modules"))
 

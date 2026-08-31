@@ -61,6 +61,116 @@ def _plain_flags(flags: list[dict] | None) -> list[str]:
             for f in flags or []]
 
 
+def _stored_figures(conn: sqlite3.Connection) -> dict[str, int]:
+    """How many quarterly figures are stored, per company.
+
+    The honest reading of "has anything been downloaded for this one" on THIS
+    machine. `ingest_state` records a fetch, but the live database was filled
+    by scripts/backfill.py before that table carried rows -- 1,496 companies
+    with a full figure history have no ingest row at all -- so a page that
+    called them un-fetched would be reporting its own blind spot. Counting
+    what is stored cannot be wrong in that direction.
+    """
+    return {r[0]: r[1] for r in conn.execute(
+        "SELECT cik, COUNT(*) FROM metrics GROUP BY cik").fetchall()}
+
+
+def _fetch_state(conn: sqlite3.Connection) -> dict[str, tuple]:
+    """Per company: how the last download ended, and why if it failed."""
+    return {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT cik, status, error FROM ingest_state").fetchall()}
+
+
+def _quality(assessable: bool | None, reason: str | None, figures: int,
+             fetch: tuple | None, avail: int | None, total: int | None,
+             latest: dict | None) -> list[dict]:
+    """Why a row is not what a blank cell would make it look like.
+
+    A watchlist is mostly rows with no number in them, and the four reasons a
+    row is empty are four different pieces of news: nothing downloaded yet,
+    the SEC has nothing to download, the company cannot be assessed at all,
+    and it can be assessed on fewer than the thirteen measures. Collapsing
+    them into one blank cell -- or into the word "no" -- is what makes a
+    watchlist read as "1,498 companies, nothing to worry about".
+
+    Written here rather than in the page for the reason api/__init__ states:
+    the sentences are part of the answer, and two copies of them can disagree.
+    """
+    chips: list[dict] = []
+    status = fetch[0] if fetch else None
+    if status == "no_facts":
+        chips.append({"label": "no filings at the SEC", "detail":
+                      "The SEC holds no machine-readable filings for this "
+                      "company, so there is nothing to read. Nothing is wrong "
+                      "with your setup."})
+    elif status == "error":
+        chips.append({"label": "last download failed", "detail":
+                      "The last attempt to download this company's filings "
+                      f"failed ({fetch[1] if fetch else 'no reason recorded'})."
+                      " Run `ledgerline fetch` to try again."})
+    elif figures == 0:
+        chips.append({"label": "never fetched", "detail":
+                      "No filing figures are stored for this company yet. "
+                      "Run `ledgerline fetch` to download its filing history."})
+    if assessable is False:
+        chips.append({"label": "cannot assess",
+                      "detail": reason or "No reason recorded."})
+    elif assessable is None:
+        chips.append({"label": "not checked yet",
+                      "detail": reason or "No reason recorded."})
+    if avail is not None and total is not None and avail < total:
+        chips.append({"label": f"{total - avail} of {total} measures "
+                               "unavailable", "detail":
+                      f"Only {avail} of the {total} measures can be computed "
+                      "from what this company filed. That is a gap in the "
+                      "filings, not something a re-fetch fixes."})
+    if latest is None:
+        chips.append({"label": "no assessment saved", "detail":
+                      "Nothing has been assessed for this company yet. "
+                      "`ledgerline scan --score` saves assessments as it runs."})
+    return chips
+
+
+def _measures(verdict: dict) -> list[dict]:
+    """The thirteen measures for one company, in the order render.PLAIN lists
+    them, each with what it read, how far that is from this company's own
+    past, and -- when it could not be computed -- why not.
+
+    Every field a page shows is read from the saved verdict; nothing here
+    recomputes a diagnostic. A measure with no reading is a row that says so,
+    never an omitted row: the ones a company cannot supply are the reason a
+    score means less than it looks like it means, and dropping them from the
+    table would make every company look fully measured.
+    """
+    z = verdict.get("z") or {}
+    values = verdict.get("diagnostics") or {}
+    fired = {(f.get("code") or "").lower(): f for f in verdict.get("flags") or []}
+    detail = verdict.get("abstention_detail") or {}
+    out = []
+    for key, (short, bad_direction) in render.PLAIN.items():
+        flag = fired.get(key)
+        row = {
+            "measure": short,
+            "technical": key,
+            "breaks_when": bad_direction,
+            "value": values.get(key),
+            "z": z.get(key),
+            "out_of_line": flag is not None,
+            "baseline_median": flag["baseline_median"] if flag else None,
+            "baseline_scale": flag["baseline_scale"] if flag else None,
+            "baseline_n": flag["baseline_n"] if flag else None,
+            "floored": bool(flag.get("floored")) if flag else False,
+            "filed": flag.get("filed") if flag else None,
+            "sources": list(flag.get("sources") or []) if flag else [],
+            "unavailable_reason": None,
+        }
+        if key not in z:
+            row["unavailable_reason"] = detail.get(key) or (
+                "not computable from what this company filed")
+        out.append(row)
+    return out
+
+
 def _latest_assessments(conn: sqlite3.Connection) -> dict[str, dict]:
     """Each company's newest saved assessment, summarised. One query.
 
@@ -105,6 +215,8 @@ def watchlist(conn: sqlite3.Connection | None = None) -> dict:
     try:
         latest = _latest_assessments(conn)
         scored = _scoreability(conn)
+        figures = _stored_figures(conn)
+        fetched = _fetch_state(conn)
         member = groups.memberships(conn=conn)
         group_list = groups.listing(conn=conn)
         rows = conn.execute(
@@ -129,6 +241,7 @@ def watchlist(conn: sqlite3.Connection | None = None) -> dict:
             checked, ok, detail, avail, total = hit
             assessable = bool(ok)
             reason = None if ok else render.plain_reason(detail)
+        n_figures = figures.get(cik, 0)
         companies.append({
             "ticker": ticker,
             "name": name,
@@ -140,6 +253,11 @@ def watchlist(conn: sqlite3.Connection | None = None) -> dict:
             "checked_on": checked,
             "measures_available": avail,
             "measures_total": total,
+            "figures_stored": n_figures,
+            "fetch_status": (fetched[cik][0] if cik in fetched else None),
+            "quality": _quality(assessable, reason, n_figures,
+                                fetched.get(cik), avail, total,
+                                latest.get(cik)),
             "latest": latest.get(cik),
         })
     return {
@@ -154,11 +272,39 @@ def watchlist(conn: sqlite3.Connection | None = None) -> dict:
     }
 
 
+def _run_outcomes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
+    """Per run: how many companies it assessed, and how many it could not.
+
+    The job log counts what a run cost and what it flagged; it has never
+    counted what it walked away from. That number is the denominator -- a run
+    that flagged 6 of 471 assessed and abstained on 18 more is a different
+    piece of news from one that flagged 6 of 489 -- and the append-only signal
+    store has it, one row per evaluation, abstentions included.
+    """
+    return {
+        str(r[0]): (int(r[1] or 0), int(r[2] or 0)) for r in conn.execute(
+            "SELECT run_id, SUM(scoreable), SUM(1 - scoreable) FROM signals "
+            "WHERE run_id IS NOT NULL GROUP BY run_id").fetchall()
+    }
+
+
 def runs(limit: int = RUNS_LIMIT) -> dict:
     """The job log as the page shows it, newest first."""
+    log = ingest.run_log(limit=limit)
+    conn = edgar.db()
+    try:
+        outcomes = _run_outcomes(conn)
+    finally:
+        conn.close()
+    for row in log:
+        hit = outcomes.get(str(row["run_id"]))
+        # None, not 0: a run that saved no assessments and a run that assessed
+        # nothing look identical as zeros, and only one of them is news.
+        row["assessed"] = hit[0] if hit else None
+        row["could_not_assess"] = hit[1] if hit else None
     return {
         "generated": date.today().isoformat(),
-        "runs": ingest.run_log(limit=limit),
+        "runs": log,
         "validation": contract.validation_block(),
     }
 
@@ -256,6 +402,43 @@ def _revisions(cik: str, conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
+def _trail(verdict: dict) -> dict:
+    """Which filing each figure behind a broken measure came from.
+
+    provenance.py resolves the trail and labels the reading TRACED / PARTIAL /
+    UNTRACED; this reshapes it for a page and gives every name its plain
+    reading. The reshaping is the point: the stored trail is keyed by
+    diagnostic and metric identifiers, and a page that printed them would show
+    a person `ocf_to_revenue` and `operating_cash_flow` -- the exact thing
+    docs/VOICE.md forbids, in the one table whose job is to make a number
+    checkable against the filing it came from.
+    """
+    prov = verdict.get("provenance") or {}
+    measures = []
+    for key, inputs in (prov.get("flags") or {}).items():
+        measures.append({
+            "measure": render.PLAIN.get(key, (key.replace("_", " "), ""))[0],
+            "inputs": [
+                {
+                    "figure": render.plain_metric(name),
+                    "concept": trace.get("concept"),
+                    "period": trace.get("end"),
+                    "origin": trace.get("origin"),
+                    "form": trace.get("form"),
+                    "filed": trace.get("filed"),
+                    "sources": [s for s in (trace.get("sources") or []) if s],
+                }
+                for name, trace in (inputs or {}).items()
+            ],
+        })
+    return {
+        "label": verdict.get("provenance_label"),
+        "derived_fraction": prov.get("derived_fraction"),
+        "derived_fraction_high": bool(prov.get("derived_fraction_high")),
+        "measures": measures,
+    }
+
+
 def company(ticker: str, conn: sqlite3.Connection | None = None,
             timeline_limit: int = TIMELINE_LIMIT) -> dict:
     """One company's detail page, as data. Raises if it is not watched.
@@ -304,6 +487,8 @@ def company(ticker: str, conn: sqlite3.Connection | None = None,
 
     latest: dict | None = None
     explain: str | None = None
+    measures: list[dict] = []
+    trail: dict = {}
     if stored is not None:
         record = json.loads(stored[8]) if stored[8] else {}
         verdict = record.get("verdict") or {}
@@ -321,6 +506,8 @@ def company(ticker: str, conn: sqlite3.Connection | None = None,
         }
         if verdict:
             explain = render.explain(verdict, name=name)
+            measures = _measures(verdict)
+            trail = _trail(verdict)
 
     return {
         "generated": date.today().isoformat(),
@@ -334,6 +521,8 @@ def company(ticker: str, conn: sqlite3.Connection | None = None,
             "No assessment has been saved for this company yet. Assessments "
             "are saved by `ledgerline scan --score` and by `ledgerline score "
             f"{tick} --emit`."),
+        "measures": measures,
+        "provenance": trail,
         "history": history,
         "filings": timeline,
         "filings_truncated": len(timeline) >= timeline_limit,

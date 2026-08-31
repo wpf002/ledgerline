@@ -62,6 +62,21 @@ the detector missed its own bar. `publish` writes the assessment feed plus
 each of those carries the same record. Publishing reads what has already been
 saved and assesses nothing.
 
+## Reading it in a browser
+
+```bash
+ledgerline publish        # write the files the viewer reads
+node service/server.mjs   # then open http://localhost:8787
+```
+
+Four pages: the latest run, the whole watchlist (filter by group or by whether
+a company can be assessed, search by ticker), one page per company (the plain
+reading, the thirteen measures, the filings every number came from, anything
+later revised), and the run log. Nothing is installed and nothing is
+downloaded — it reads the published files and stays on loopback. Every page
+leads with the result of the failed test, and a page with nothing to show says
+which command would fill it.
+
 ## What the output means
 
 - **FLAGGED** — at least two measures broke from this company's own historical

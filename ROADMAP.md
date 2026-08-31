@@ -490,9 +490,9 @@ a byte-offset test to precede the first ticker. Cut: the daily digest email
 and per-filer webhook — an email naming a ticker is, on this gate's own
 numbers, more often wrong than right, and a webhook is where the consumer
 drops the validation block; the Fastify + Prisma + Postgres stack — replaced
-by a single-file, node-builtins-only, loopback-only reader (`service/`) that
-never computes a score and refuses to serve a record without its validation
-block. The supersedes/revision chain was cut too: a content-addressed
+by a node-builtins-only, loopback-only reader (`service/`, two files and a
+stylesheet, no install step) that never computes a score and refuses to serve
+a record -- or render a page -- without its validation block. The supersedes/revision chain was cut too: a content-addressed
 signal_id already makes re-emits idempotent and changed payloads new rows.
 
 ## 10. Phase 6 — track record, Phase 7 — scale

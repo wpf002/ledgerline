@@ -1,0 +1,151 @@
+/* The one stylesheet every page links. It was the <style> block inside
+   index.html when there was one page; four pages that each carried their own
+   copy would be four places for the verdict banner to drift apart in.
+
+   The palette, the type and the light/dark handling are unchanged from that
+   block -- what follows the first section is additions for the pages that did
+   not exist before (navigation, filters, quality chips, timelines), in the
+   same vocabulary. No web fonts, no CDN: the page renders offline. */
+
+:root {
+  --paper:#FAFBF8; --surface:#FFFFFF; --surface-2:#F1F4EF;
+  --ink:#15191A; --ink-2:#3D4644; --ink-3:#6C7772;
+  --rule:#DBE1D9; --rule-soft:#E8EDE6;
+  --accent:#1F5D4C; --accent-wash:#E7F0EB;
+  --flag:#A6321E; --flag-wash:#F8E9E5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper:#0E1211; --surface:#151A19; --surface-2:#1B2220;
+    --ink:#E9EDE8; --ink-2:#B6C0BA; --ink-3:#7E8A85;
+    --rule:#2A3331; --rule-soft:#212927;
+    --accent:#63B79B; --accent-wash:#16302A;
+    --flag:#E2705A; --flag-wash:#2E1A16;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+.wrap.wide { max-width: 1120px; }
+h1 { font-size: 1.7rem; letter-spacing: -.01em; margin: 0 0 .25rem;
+     font-family: ui-serif, Georgia, serif; font-weight: 600; }
+h1 a { color: inherit; text-decoration: none; }
+.sub { color: var(--ink-3); margin: 0 0 1.5rem; }
+.banner {
+  border-left: 3px solid var(--flag); background: var(--flag-wash);
+  padding: .9rem 1.1rem; border-radius: 0 3px 3px 0; margin: 0 0 1.75rem;
+  font-size: .92rem; max-width: 74ch;
+}
+.banner b { font-family: ui-monospace, Menlo, monospace; font-size: .8rem;
+            letter-spacing: .07em; color: var(--flag); display: block;
+            margin-bottom: .3rem; }
+h2 { font-size: 1.05rem; border-bottom: 1px solid var(--rule);
+     padding-bottom: .4rem; margin: 2rem 0 .9rem; }
+.stats { display: flex; flex-wrap: wrap; gap: 0; border: 1px solid var(--rule);
+         border-radius: 3px; overflow: hidden; background: var(--surface); }
+.stats div { flex: 1 1 auto; padding: .6rem 1rem; border-right: 1px solid var(--rule); }
+.stats div:last-child { border-right: 0; }
+.stats dt { font: 600 .62rem/1.4 ui-monospace, Menlo, monospace;
+            letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
+            margin: 0 0 .1rem; }
+.stats dd { margin: 0; font-family: ui-monospace, Menlo, monospace;
+            font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.expect { background: var(--surface-2); border-radius: 3px; padding: .7rem 1rem;
+          margin: 1rem 0; font-size: .92rem; max-width: 74ch; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem;
+        background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; }
+th { text-align: left; font: 600 .62rem/1.4 ui-monospace, Menlo, monospace;
+     letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
+     padding: .55rem .9rem; border-bottom: 1px solid var(--rule);
+     background: var(--surface-2); }
+td { padding: .6rem .9rem; border-bottom: 1px solid var(--rule-soft);
+     vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-family: ui-monospace, Menlo, monospace;
+         font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.tick { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+/* The ticker is an identifier and is set like one; the company's name beneath
+   it is a name, and reading it in monospace makes it look like a key too. */
+td.tick .quiet { font-family: ui-sans-serif, system-ui, -apple-system,
+                 "Segoe UI", sans-serif; font-weight: 400; }
+.quiet { color: var(--ink-3); font-size: .88rem; }
+form { display: flex; gap: .5rem; margin: .25rem 0 1rem; }
+input[type=text] {
+  flex: 0 1 14rem; padding: .5rem .7rem; border: 1px solid var(--rule);
+  border-radius: 3px; background: var(--surface); color: var(--ink);
+  font: inherit; text-transform: uppercase;
+}
+button { padding: .5rem 1rem; border: 0; border-radius: 3px;
+         background: var(--accent); color: var(--paper); font: 600 .9rem inherit;
+         cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible,
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
+         font-size: .8rem; color: var(--ink-3); }
+code { font-family: ui-monospace, Menlo, monospace; font-size: .85em;
+       background: var(--surface-2); padding: .1em .35em; border-radius: 2px; }
+
+/* ---------------------------------------------------- the multi-page parts */
+
+nav.pages { display: flex; flex-wrap: wrap; gap: .1rem; margin: 0 0 1.5rem;
+            border-bottom: 1px solid var(--rule); }
+nav.pages a { display: block; padding: .45rem .85rem; text-decoration: none;
+              font-size: .9rem; color: var(--ink-2); border-bottom: 2px solid transparent;
+              margin-bottom: -1px; }
+nav.pages a:hover { color: var(--ink); }
+nav.pages a[aria-current=page] { color: var(--accent); font-weight: 600;
+                                 border-bottom-color: var(--accent); }
+
+/* Filters read as a line of controls, not a form to fill in. */
+form.filters { flex-wrap: wrap; align-items: flex-end; gap: .6rem;
+               background: var(--surface); border: 1px solid var(--rule);
+               border-radius: 3px; padding: .8rem 1rem; }
+form.filters label { display: block; font: 600 .62rem/1.6 ui-monospace, Menlo, monospace;
+                     letter-spacing: .09em; text-transform: uppercase;
+                     color: var(--ink-3); }
+form.filters select { padding: .45rem .5rem; border: 1px solid var(--rule);
+                      border-radius: 3px; background: var(--surface);
+                      color: var(--ink); font: inherit; font-size: .9rem; }
+/* The base rule sets a flex basis, which inside a column-direction .field
+   would size the box vertically -- a search box eight lines tall. */
+form.filters input[type=text] { flex: none; width: 12rem; text-transform: none; }
+form.filters .field { display: flex; flex-direction: column; gap: .2rem; }
+form.filters a.clear { align-self: center; font-size: .85rem; }
+
+.chips { display: flex; flex-wrap: wrap; gap: .3rem; }
+.chip { display: inline-block; font-size: .74rem; line-height: 1.5;
+        padding: .05rem .5rem; border-radius: 10px; border: 1px solid var(--rule);
+        background: var(--surface-2); color: var(--ink-2); cursor: help; }
+.chip.warn { border-color: var(--flag); background: var(--flag-wash); color: var(--flag); }
+.chip.plain { cursor: default; }
+
+.verdict-flagged { color: var(--flag); font-weight: 600; }
+.verdict-quiet { color: var(--ink-2); }
+.verdict-none { color: var(--ink-3); }
+
+.explain { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
+           font-size: .82rem; background: var(--surface);
+           border: 1px solid var(--rule); border-radius: 3px;
+           padding: 1rem; overflow-x: auto; margin: 0 0 1rem; }
+.note { font-size: .88rem; color: var(--ink-3); max-width: 74ch; margin: .6rem 0 0; }
+.empty { background: var(--surface); border: 1px solid var(--rule);
+         border-radius: 3px; padding: 1.2rem; max-width: 74ch; }
+.empty p { margin: 0 0 .6rem; }
+.empty p:last-child { margin: 0; }
+.pager { display: flex; gap: 1rem; align-items: baseline; margin: .8rem 0 0;
+         font-size: .88rem; }
+.acc { font-family: ui-monospace, Menlo, monospace; font-size: .82rem;
+       white-space: nowrap; }
+.scroll { overflow-x: auto; }
+/* Inside a scrolling table a wrapped header column reads as a truncated word.
+   The container scrolls; the heading does not have to fold. */
+.scroll th { white-space: nowrap; }
+dl.meta { display: flex; flex-wrap: wrap; gap: 0 1.5rem; margin: 0 0 1.25rem;
+          font-size: .88rem; color: var(--ink-3); }
+dl.meta div { display: flex; gap: .35rem; }
+dl.meta dt { font-weight: 600; }
+dl.meta dd { margin: 0; }

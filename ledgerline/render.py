@@ -18,13 +18,36 @@ signals_v3.evaluate() already produces.
 """
 from __future__ import annotations
 
-# One sentence, same wording everywhere. Any output that flags a company -- or
-# whose silence could be read as a clean bill of health -- carries it.
-CAVEAT = (
-    "This detector missed its own test on 2026-08-30: it caught 29% of the "
-    "deteriorations it was built to find, against a target of 60%. Not being "
-    "flagged is not a clean bill of health."
-)
+from . import status
+
+
+def caveat() -> str:
+    """The failed test in one sentence, both directions, from the frozen record.
+
+    Was a string literal carrying its own copy of "2026-08-30", "29%" and
+    "60%" -- the second-copy-that-drifts defect status.py forbids for banner()
+    -- and nothing bound it to ledgerline/data/phase0.json: the whole suite
+    passed with the date, the numbers and the direction of the claim replaced
+    by inventions. Generated now, so a record that changed would change this
+    sentence with it, and unproducible on a machine holding no evidence.
+
+    It also says BOTH halves of the failure. The old wording answered only
+    "not being flagged is not a clean bill of health", which is the case a
+    reader who was just FLAGGED is not in -- and this sentence closes the
+    flagged company's page.
+    """
+    # Annotated loose so the frozen numbers read as numbers: status.summary()
+    # is typed for the drift check, whose values are deliberately opaque.
+    p: dict = status.summary()
+    ratio = p["fpr_per_control_quarter"] / p["naive_baseline_fpr"]
+    return (
+        f"This detector missed its own test on {p['scored_on']}: it caught "
+        f"{p['positive_hit_rate']:.1%} of the deteriorations it was built to "
+        f"find, against a target of {p['positive_hit_rate_floor']:.0%}, and it "
+        f"flagged quiet companies {ratio:.1f} times as often as the crude "
+        f"two-line rule it had to beat. A flag is not evidence that anything "
+        f"is wrong, and not being flagged is not a clean bill of health."
+    )
 
 # diagnostic -> (short name for tables, plain description of the BAD direction)
 PLAIN: dict[str, tuple[str, str]] = {
@@ -178,7 +201,7 @@ def explain(res: dict, name: str | None = None) -> str:
                      "worked out by subtracting one year-to-date report from "
                      "another, rather than read directly from a filing.")
     lines.append("")
-    lines.append(CAVEAT)
+    lines.append(caveat())
     return "\n".join(lines)
 
 

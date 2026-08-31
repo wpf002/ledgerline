@@ -648,7 +648,7 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                    f"compan{'y' if c['scored'] == 1 else 'ies'}; "
                    f"{c['gated_in']} flagged.")
         if c["gated_in"]:
-            typer.echo(render.CAVEAT)
+            typer.echo(render.caveat())
         typer.echo("Details for any company: ledgerline explain TICKER")
     else:
         typer.echo(f"\nUpdated {c['filers_done']} "
@@ -672,6 +672,13 @@ def explain(ticker: str,
         raise typer.Exit(1)
     name = edgar.universe()[cik]["name"]
     res = phase0.stamp(signals_v3.evaluate(ticker.upper(), cik, as_of=as_of))
+    # The verdict prints BEFORE the first result line, as on every other
+    # score-showing surface. This one printed "FLAGGED. Concern score 100 of
+    # 100" on line 4 and left the reader thirty lines to reach a closing
+    # sentence about the case they were not in -- and this is the command the
+    # README, the web footer and `scan --score` all point a person to.
+    typer.echo(phase0.banner())
+    typer.echo("")
     typer.echo(render.explain(res, name=name))
 
 
@@ -1053,6 +1060,12 @@ def narrations(as_of: str = typer.Option(None, help="Only summaries written "
     args.append(limit)
     rows = conn.execute(q, args).fetchall()
     conn.close()
+    # Only flagged assessments are ever narrated, so every "summary written"
+    # line below is confident model prose about a company this gate fired on.
+    # The single-narration view already led with the verdict; this listing --
+    # the most product-like output the tool produces -- carried none at all.
+    typer.echo(phase0.banner())
+    typer.echo("")
     if not rows:
         typer.echo("No summaries recorded yet. They are written by "
                    "`ledgerline narrate TICKER` or `ledgerline scan --score "
@@ -1324,9 +1337,33 @@ def phase0_freeze(report: str = typer.Option(None, help="Path to the one-shot te
 
 
 @app.command(name="run-test")
-def run_test(split: str = "tuning", start_year: int = 2005, end_year: int = 2025):
-    """Score a half of the cases. On the sealed half this is one-shot and
-    prints the pass/fail verdict against the committed pass mark."""
+def run_test(split: str = typer.Option("tuning", help="Which half of the cases "
+                                       "to score. Only 'tuning' (the practice "
+                                       "half) is allowed: the sealed half was "
+                                       "already scored, once."),
+             start_year: int = typer.Option(2005, help="First year of quarterly "
+                                                       "checkpoints."),
+             end_year: int = typer.Option(2025, help="Last year of quarterly "
+                                                     "checkpoints.")):
+    """Score the practice half of the cases against the committed pass mark.
+
+    The sealed half is refused. It was scored once, on the date recorded in
+    ledgerline/data/phase0.json, and the reserved companies in
+    ledgerline/data/retests.json are the only legitimate future test.
+    """
+    # `replay` refused the sealed half and `calibrate` refused it; this command
+    # -- the one whose whole job is to score a split -- did not, so a second
+    # shot was one flag away, and its output would have overwritten the only
+    # full record of the first. Refused here for the message a person reads,
+    # and again inside backtest.run() for every caller that is not this one.
+    if split == "holdout" and phase0.holdout_is_spent():
+        typer.echo("run-test scores the practice half only ('tuning'), "
+                   "because " + phase0.spent_refusal())
+        raise typer.Exit(2)
+    # The verdict leads, on both branches: a sheet of PASS rows with the failed
+    # test nowhere on it is the loudest way this repo can imply a working gate.
+    typer.echo(phase0.banner())
+    typer.echo("")
     report = backtest.run(split=split, start_year=start_year, end_year=end_year)
     if "verdict" in report:
         typer.echo("Sealed test half, scored against the pass mark committed in "

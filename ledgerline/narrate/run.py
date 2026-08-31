@@ -321,7 +321,7 @@ def render(result: NarrationResult) -> str:
                      "were worked out by subtracting one year-to-date report "
                      "from another.")
     lines.append("")
-    lines.append(render_mod.CAVEAT)
+    lines.append(render_mod.caveat())
     return "\n".join(lines)
 
 

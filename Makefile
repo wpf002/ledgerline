@@ -15,8 +15,8 @@ fmt:       ## autoformat
 fetch:     ## download filing history for the watchlist
 	python -m ledgerline.cli fetch
 
-run-test:  ## score the sealed half against the committed pass mark
-	python -m ledgerline.cli run-test --split holdout
+run-test:  ## score the practice half against the committed pass mark
+	python -m ledgerline.cli run-test --split tuning
 
 cost:      ## measure the run-cost curve; prints the flat and non-flat parts
 	python -m ledgerline.cli cost

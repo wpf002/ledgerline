@@ -16,7 +16,7 @@ import sqlite3
 import pytest
 from typer.testing import CliRunner
 
-from ledgerline import cli, edgar, emit, ingest, signals_v3, status
+from ledgerline import backtest, cli, edgar, emit, ingest, signals_v3, status
 from tests.unit.test_gate import build_filer
 
 
@@ -325,3 +325,58 @@ def test_scan_score_persists_every_evaluation_with_the_full_denominator(
         assert run["evaluated"] == 2
         assert run["unscoreable_reasons"] == {"SHORT_HISTORY": 1}
     assert {r["scoreable"] for r in stored} == {0, 1}
+
+
+def test_run_test_refuses_the_spent_holdout(isolated_db, monkeypatch):
+    """`run-test --split holdout` had no guard at all. replay refused the
+    sealed half and calibrate refused it, but the one command whose job is to
+    score a split would rescore it -- overwriting reports/backtest_holdout.json,
+    the only full record of the 2026-08-30 failure -- and print a verdict sheet.
+    It refuses now: non-zero exit, retests.json named as the legitimate
+    alternative, no override flag, and the scorer is never reached.
+
+    The scorer is stubbed rather than trusted: a test that let the old code
+    through would itself be a second scoring of the sealed half.
+    """
+    reached = []
+    monkeypatch.setattr(backtest, "run",
+                        lambda **kw: reached.append(kw) or {"outcomes": []})
+    result = runner.invoke(cli.app, ["run-test", "--split", "holdout"])
+    assert result.exit_code != 0
+    assert not reached, "the sealed half reached the scorer"
+    assert "refuses" in result.output
+    assert "no override flag" in result.output
+    assert "retests.json" in result.output
+    assert "2026-08-30" in result.output
+
+
+def test_run_test_prints_the_verdict_before_any_result(isolated_db, monkeypatch):
+    """A sheet of PASS rows with the failed test nowhere on it is the loudest
+    way this repo can imply a working gate, and run-test was the one
+    score-showing command with no banner on either branch."""
+    monkeypatch.setattr(backtest, "run", lambda **kw: {
+        "outcomes": [{"fired": True}, {"fired": False}]})
+    result = runner.invoke(cli.app, ["run-test"])
+    assert result.exit_code == 0
+    assert result.output.index("NOT VALIDATED") < result.output.index("practice half")
+
+
+def test_narrations_prints_the_banner_before_the_first_summary(isolated_db):
+    """Only flagged assessments are narrated, so every line this command
+    prints is confident model prose about a company the failed gate fired on.
+    The single-narration view already led with the verdict; this listing -- the
+    most product-like output the tool produces -- carried none at all, on
+    either stream."""
+    conn = edgar.db()
+    with conn:
+        conn.execute(
+            "INSERT INTO narrations (cik, ticker, as_of, period, payload_sha, "
+            "status, attempts, headline, input_tokens, output_tokens, "
+            "created_at) VALUES ('0000000001','TEST','2026-08-31','2026-06-30',"
+            "'sha1','narrated',1,'TEST margins and cash conversion both broke "
+            "from its own pattern.',900,120,'2026-08-31T00:00:00Z')")
+    conn.close()
+    result = runner.invoke(cli.app, ["narrations"])
+    assert result.exit_code == 0
+    assert "NOT VALIDATED" in result.output
+    assert result.output.index("NOT VALIDATED") < result.output.index("TEST")

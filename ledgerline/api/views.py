@@ -177,14 +177,21 @@ def _latest_assessments(conn: sqlite3.Connection) -> dict[str, dict]:
     Newest is by as_of and then by position, not by emission time: a replay
     run today can write an assessment made as of 2019, and the page must show
     the most recent thing assessed, not the most recently typed command.
+
+    source and split travel with the row for the same reason the digest now
+    carries them: every assessment on record today is a replay over the
+    practice half, and the watchlist cell read as a current verdict on the
+    company because the two columns that say otherwise were not selected.
     """
     rows = conn.execute(
-        "SELECT cik, as_of, period, score, gated_in, scoreable, reason, flags "
+        "SELECT cik, as_of, period, score, gated_in, scoreable, reason, flags, "
+        "source, split "
         "FROM signals s WHERE seq = (SELECT seq FROM signals x "
         "WHERE x.cik = s.cik ORDER BY as_of DESC, seq DESC LIMIT 1)"
     ).fetchall()
     out = {}
-    for cik, as_of, period, score, gated, scoreable, reason, flags in rows:
+    for (cik, as_of, period, score, gated, scoreable, reason, flags,
+         source, split) in rows:
         parsed = json.loads(flags) if flags else []
         out[cik] = {
             "as_of": as_of,
@@ -194,6 +201,8 @@ def _latest_assessments(conn: sqlite3.Connection) -> dict[str, dict]:
             "scoreable": bool(scoreable),
             "reason": render.plain_reason(reason) if reason else None,
             "flags": _plain_flags(parsed),
+            "source": source,
+            "split": split,
         }
     return out
 

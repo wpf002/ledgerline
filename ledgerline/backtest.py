@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import os
 
-from . import edgar, signals, signals_v3
+from . import edgar, signals, signals_v3, status
 from .validate import harness
 
 REPORTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reports")
@@ -107,10 +107,14 @@ def naive_scorer_factory():
 def run(split: str = "tuning", start_year: int = 2005, end_year: int = 2025) -> dict:
     """Run the gate across one split and apply the pre-registered rule.
 
-    `split` must be 'tuning' or 'holdout'. The holdout is scored once; running
-    it a second time after retuning voids the test, and harness.verify_split()
-    will refuse if the split file was edited.
+    `split` must be 'tuning' or 'holdout'. The holdout is scored once, and
+    once the result is frozen this function refuses it outright -- the docstring
+    used to say "running it a second time voids the test" and then run it. That
+    left `ledgerline run-test --split holdout` free to rescore the sealed half
+    and overwrite reports/backtest_holdout.json, the only full record of the
+    2026-08-30 failure. harness.verify_split() still refuses an edited split.
     """
+    status.refuse_spent_holdout(split)
     harness.verify_split()
     cases = harness.load_split(split)
     cutoffs = quarterly_cutoffs(start_year, end_year)

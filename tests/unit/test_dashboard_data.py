@@ -342,7 +342,7 @@ def test_company_page_carries_the_same_words_the_terminal_prints(
     page = published(tmp_path)["company"]
     expected = render.explain(page["latest"]["verdict"], name="T Inc")
     assert page["explain"] == expected
-    assert render.CAVEAT in page["explain"]
+    assert render.caveat() in page["explain"]
 
 
 def test_company_page_timeline_names_the_filings_the_numbers_came_from(

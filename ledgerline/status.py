@@ -26,6 +26,10 @@ Three deliberate choices:
   * load() cross-checks the file against the pinned numbers below, the same
     discipline harness.load_prereg() applies to prereg.json: editing the
     committed record in place to move the bar raises instead of passing.
+
+The same file answers a second question: has the one shot been taken?
+refuse_spent_holdout() is the guard every scoring entry point calls, because
+the frozen record IS the evidence the sealed half was already scored.
 """
 from __future__ import annotations
 
@@ -114,6 +118,61 @@ def load() -> dict:
         )
     _cache[PHASE0_PATH] = payload
     return payload
+
+
+def summary() -> dict[str, object]:
+    """The frozen record reduced to the pinned keys, for surfaces that build a
+    sentence from the numbers rather than reprinting banner() whole.
+
+    Public so render.caveat() cannot hand-type its own copy of the result: a
+    literal caveat is the same second-copy-that-drifts defect banner() exists
+    to avoid, and it drifted -- the shipped one claimed "29%" and a date, with
+    nothing binding either to this file.
+    """
+    return _summary(load())
+
+
+def holdout_is_spent() -> bool:
+    """True once the one-shot result is frozen: the shot has been taken.
+
+    Keyed on the frozen record rather than on a constant, because that file IS
+    the evidence the sealed half was scored. On a machine that has not frozen
+    it there is no verdict to print either, so no score can reach a person
+    there regardless -- load() raises.
+    """
+    return os.path.exists(PHASE0_PATH)
+
+
+def spent_refusal() -> str:
+    """Why the sealed half cannot be scored again, in one written reason.
+
+    One copy of the words, shared by backtest.run() and the CLI, so the
+    refusal a person reads and the refusal a program hits cannot diverge.
+    """
+    return (
+        f"the sealed test half was scored exactly once, on {load()['scored_on']}, "
+        "and that one measurement is only meaningful while it stays the only "
+        "one. Scoring it again -- after a retune, or quietly into a report "
+        "file -- is a second look at the answer it was reserved for, so the "
+        "tool refuses and there is no override flag. The reserved companies "
+        "in ledgerline/data/retests.json are the only legitimate future test "
+        "(ledgerline retest reserve/register/status). The result that was "
+        "already taken is in ledgerline/data/phase0.json and reports/PHASE0.md."
+    )
+
+
+def refuse_spent_holdout(split: str) -> None:
+    """Raise if `split` names the sealed half and its one shot is already spent.
+
+    The guard every scoring entry point calls. calibrate.build_dataset had one
+    and cli.replay had one, but backtest.run() -- the one function whose job is
+    to score a split -- had none, so `ledgerline run-test --split holdout` ran
+    today with no refusal and overwrote reports/backtest_holdout.json, the only
+    full record of the 2026-08-30 failure.
+    """
+    if split != "holdout" or not holdout_is_spent():
+        return
+    raise RuntimeError("refusing to score the holdout: " + spent_refusal())
 
 
 def banner() -> str:

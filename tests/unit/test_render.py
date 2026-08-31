@@ -7,7 +7,7 @@ import urllib.error
 
 import pytest
 
-from ledgerline import edgar, render
+from ledgerline import edgar, render, status
 
 
 def test_unscoreable_explain_shows_no_score():
@@ -119,3 +119,42 @@ def test_daily_index_treats_403_as_no_list_published(monkeypatch):
     monkeypatch.setattr(edgar, "fetch", raise_403)
     from datetime import date
     assert edgar.daily_index(date(2026, 8, 30)) == []
+
+
+def test_the_caveat_is_generated_from_the_frozen_record(monkeypatch):
+    """The caveat was a string literal holding its own copy of "2026-08-30",
+    "29%" and "60%", bound to nothing: the whole suite passed with the date,
+    the numbers and the direction of the claim replaced by inventions. It is
+    computed from status.summary() now, so a different record produces a
+    different sentence."""
+    assert "2026-08-30" in render.caveat()
+    assert "28.7%" in render.caveat() and "60%" in render.caveat()
+    base = status.summary()
+    monkeypatch.setattr(status, "summary", lambda: dict(
+        base, scored_on="2027-03-01", positive_hit_rate=0.71,
+        positive_hit_rate_floor=0.65, fpr_per_control_quarter=0.004,
+        naive_baseline_fpr=0.005))
+    moved = render.caveat()
+    assert "2027-03-01" in moved and "71.0%" in moved and "65%" in moved
+    assert "2026-08-30" not in moved and "28.7%" not in moved
+
+
+def test_the_caveat_answers_the_flagged_reader_as_well(monkeypatch):
+    """It closes the page of a company that WAS flagged, and said only that
+    not being flagged is no clean bill of health -- the case that reader is
+    not in. Both directions now, and the false-alarm side the JSON surfaces
+    already carried."""
+    text = render.caveat()
+    assert "A flag is not evidence" in text
+    assert "not a clean bill of health" in text
+    assert "7.5 times as often" in text
+
+
+def test_the_caveat_cannot_be_produced_without_the_evidence_file(
+        tmp_path, monkeypatch):
+    """Same rule as status.banner(): on a machine holding no record of the
+    2026-08-30 test there is no caveat to print, only the error. A literal
+    printed happily on any machine, which is how it stopped being evidence."""
+    monkeypatch.setattr(status, "PHASE0_PATH", str(tmp_path / "absent.json"))
+    with pytest.raises(RuntimeError, match="deliberately no default"):
+        render.caveat()

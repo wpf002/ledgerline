@@ -171,10 +171,43 @@ export function message({ title, current, validation, heading, paragraphs }) {
 
 // ------------------------------------------------------------------ overview
 
+// Where the numbers on this page came from, in the same words
+// ledgerline/api/digest.py provenance_line() uses. Duplicated in English for
+// the same reason the expectation sentence is: /digest carries the machine
+// fields (source, split) and no sentence, and this page had been dropping
+// both -- so a replay over the practice half, the split the thresholds were
+// fitted on, rendered as "Latest run" with nothing saying otherwise.
+const REPLAY_SPLIT = {
+  tuning: " over the practice half — the companies the thresholds were fitted on —",
+  holdout: " over the sealed test half",
+};
+const LIVE_SOURCES = ["scan", "score", "emit"];
+const BACKFILL_SOURCES = ["replay"];
+
+export function provenance(run) {
+  const source = run.source || "unrecorded";
+  const when = run.run_date || "an unrecorded date";
+  if (BACKFILL_SOURCES.includes(source)) {
+    return "Where these numbers come from: a replay" +
+      (REPLAY_SPLIT[run.split] || "") + ` at the ${when} checkpoint, not a ` +
+      "live run. Those quarters were already available when the thresholds " +
+      "were chosen, so nothing here is evidence about companies the detector " +
+      "has not seen.";
+  }
+  if (LIVE_SOURCES.includes(source)) {
+    return `Where these numbers come from: a live run on ${when}, recorded ` +
+      `as “${source}”.`;
+  }
+  return `Where these numbers come from: a run recorded as “${source}”` +
+    (run.split ? `, over the ${run.split} half` : "") + `, dated ${when}.`;
+}
+
 export function overview(digest) {
   const run = digest.run || {};
   const stats = [
     ["run", run.run_date ?? "—"],
+    ["source", run.source ?? "—"],
+    ["split", run.split ?? "—"],
     ["assessed", num(run.scoreable)],
     ["cannot assess", num(run.unscoreable)],
     ["flagged", num(run.gated_in)],
@@ -185,6 +218,7 @@ export function overview(digest) {
 <h2>Latest run</h2>
 <dl class="stats">${stats.map(([k, v]) =>
     `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>
+<div class="expect">${esc(provenance(run))}</div>
 <div class="expect">At the measured false-alarm rate, about
   ${expected.toFixed(1)} of the ${num(run.scoreable)} assessed companies would
   be expected to be flagged even if nothing were wrong. Read the list below
@@ -238,9 +272,16 @@ function lastAssessment(c) {
   const head = l.flagged
     ? '<span class="verdict-flagged">FLAGGED</span>'
     : '<span class="verdict-quiet">not flagged</span>';
+  // Provenance on the cell, not just on the page: every assessment on record
+  // today is a replay over the practice half, and this cell read as a current
+  // verdict on the company because the row's own source and split were not
+  // shown.
+  const from = l.source === "replay"
+    ? `, replayed${l.split === "tuning" ? " over the practice half" : ""}`
+    : "";
   return `${head} <span class="num">${esc(l.score)} of 100</span><br>` +
     `<span class="quiet">quarter ending ${esc(l.period)}, from figures filed ` +
-    `by ${esc(l.as_of)}${(l.flags || []).length
+    `by ${esc(l.as_of)}${esc(from)}${(l.flags || []).length
       ? ` — ${(l.flags).map(esc).join(", ")}` : ""}</span>`;
 }
 

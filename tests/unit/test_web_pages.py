@@ -349,3 +349,81 @@ def test_an_empty_assessability_filter_never_claims_the_opposite_state(site):
 
     narrowed = site.body("/watchlist?assessable=unknown&q=ZZNOPE")
     assert "Every watched company has been checked" not in narrowed
+
+
+# --------------------------------------------------- where the numbers are from
+
+
+PAGES_MJS = os.path.join(ROOT, "service", "pages.mjs")
+
+
+def render_page(fn: str, *args) -> str:
+    """Render one page function out of process, with no server.
+
+    pages.mjs imports nothing and computes nothing -- pure functions from
+    published JSON to markup -- which is what lets a test hand it a run the
+    live database does not currently hold.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("node is not installed; the read service is a node program")
+    script = ("import('file://' + process.argv[1]).then((p) => "
+              "process.stdout.write(p[process.argv[2]]"
+              "(...JSON.parse(process.argv[3]))))")
+    out = subprocess.run(
+        ["node", "-e", script, "--", PAGES_MJS, fn, json.dumps(list(args))],
+        capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def _digest(run: dict) -> dict:
+    return {"run": run, "validation": contract.validation_block(),
+            "expected_false_positives_if_nothing_wrong": 1.2, "fires": []}
+
+
+def test_the_overview_says_a_replay_is_a_replay():
+    """Every assessment on record today is a replay over the practice half --
+    the split the thresholds were fitted on -- and the front page rendered
+    those six companies under "Latest run" with `source` and `split` arriving
+    in the same payload and being dropped. The banner caveats the method; this
+    caveats these particular numbers."""
+    body = render_page("overview", _digest(
+        {"run_date": "2025-11-15", "source": "replay", "split": "tuning",
+         "scoreable": 453, "unscoreable": 18, "gated_in": 6}))
+    assert "a replay over the practice half" in body
+    assert "the companies the thresholds were fitted on" in body
+    assert "not a live run" in body
+    assert ">source</dt><dd>replay<" in body.replace("\n", "")
+    assert ">split</dt><dd>tuning<" in body.replace("\n", "")
+    # A live run is not described as a replay.
+    live = render_page("overview", _digest(
+        {"run_date": "2026-08-30", "source": "scan", "scoreable": 1}))
+    assert "a live run on 2026-08-30" in live and "replay" not in live
+
+
+def test_a_replayed_assessment_says_so_in_the_watchlist_cell():
+    """The same omission one table cell down: `views._latest_assessments`
+    selected no source column, so a 2019 practice-half replay rendered as the
+    company's current verdict with nothing on the row saying otherwise."""
+    company = {"ticker": "TEST", "name": "T Inc", "groups": [], "quality": [],
+               "assessable": True,
+               "latest": {"as_of": "2019-05-15", "period": "2019-03-31",
+                          "score": 61.2, "flagged": True, "scoreable": True,
+                          "reason": None, "flags": [], "source": "replay",
+                          "split": "tuning"}}
+    body = render_page("watchlist", {"companies": [company], "groups": [],
+                                     "n_companies": 1, "n_assessable": 1,
+                                     "validation": contract.validation_block()},
+                       {"q": "", "group": "", "assessable": "", "page": 1})
+    assert "replayed over the practice half" in body
+
+
+def test_the_published_watchlist_row_carries_its_own_provenance(site):
+    """The Python half of the same fix: the field has to reach the page for
+    the page to be able to print it."""
+    with open(os.path.join(site.feed_dir, "watchlist.json")) as fh:
+        data = json.load(fh)
+    latest = next(c["latest"] for c in data["companies"]
+                  if c["ticker"] == "TEST")
+    assert latest["source"] == "emit"
+    assert "split" in latest

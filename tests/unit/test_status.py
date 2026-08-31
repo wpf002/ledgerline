@@ -263,3 +263,19 @@ def test_committed_record_matches_the_module_pins():
     loaded = status.load()
     assert loaded["verdict"] == "KILL"
     assert loaded["writeup"] == "reports/PHASE0.md"
+
+
+def test_explain_prints_the_banner_before_the_score(capsys, monkeypatch):
+    """The flagship surface -- the one README.md, the web footer and `scan
+    --score` all point a person to -- opened with "FLAGGED. Concern score 100
+    of 100" on line 4 and carried no banner on either stream. The verdict
+    leads here as it does on every other score-showing surface, and the
+    closing caveat now also answers the reader who WAS flagged."""
+    res = _verdict(score=100.0, gated=True)
+    _watch_one(monkeypatch)
+    monkeypatch.setattr(signals_v3, "evaluate", lambda *a, **k: res)
+    cli.explain("T", as_of=None)
+    out = capsys.readouterr().out
+    assert "NOT VALIDATED" in out
+    assert out.index("NOT VALIDATED") < out.index("FLAGGED")
+    assert "A flag is not evidence" in out

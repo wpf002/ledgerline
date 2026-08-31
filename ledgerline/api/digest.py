@@ -11,6 +11,8 @@ past. This writes a file; a person decides what to do with it.
 The ordering of the text is load-bearing and pinned by a byte-offset test:
 
   1. the failed-test banner (status.banner(), generated from the frozen file);
+  1a. where these particular numbers came from -- a live run, or a replay of
+     the practice half. The banner caveats the method; this caveats the rows;
   2. the run's coverage -- evaluated, assessed, could-not-assess with the
      reasons counted;
   3. the expectation line: how many of the companies assessed TODAY would be
@@ -27,7 +29,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from .. import edgar, reasons, render, status
+from .. import edgar, reasons, render, status, track
 from . import contract
 
 
@@ -48,6 +50,45 @@ def expectation_line(scored: int, fpr_per_quarter: float) -> str:
         f"false-alarm rate is {fpr_per_quarter:.2%} per quiet "
         f"company-quarter."
     )
+
+
+# What a replayed run was replayed over, said in the words track.py already
+# uses for the same distinction.
+_REPLAY_SPLIT: dict[str, str] = {
+    "tuning": " over the practice half -- the companies the thresholds were "
+              "fitted on --",
+    "holdout": " over the sealed test half",
+}
+
+
+def provenance_line(run: dict) -> str:
+    """Where these particular numbers came from: live run, or replay of what?
+
+    The banner caveats the METHOD. It says nothing about the rows on screen,
+    and every saved assessment in this project today is a replay over the
+    practice half -- the split the thresholds were fitted on. Both this digest
+    and the web overview printed those companies as the latest run with the
+    `source` and `split` fields sitting unread in the same payload, so the
+    most flattering output the detector can produce read as the current state
+    of the world. track.py already treats the distinction as load-bearing:
+    "the two are never pooled: replayed quarters are already spent".
+    """
+    source = str(run.get("source") or "unrecorded")
+    split = str(run.get("split") or "")
+    when = run.get("run_date") or "an unrecorded date"
+    if source in track.BACKFILL_SOURCES:
+        return (
+            f"Where these numbers come from: a replay{_REPLAY_SPLIT.get(split, '')} "
+            f"at the {when} checkpoint, not a live run. Those quarters were "
+            "already available when the thresholds were chosen, so nothing "
+            "here is evidence about companies the detector has not seen."
+        )
+    if source in track.LIVE_SOURCES:
+        return (f"Where these numbers come from: a live run on {when}, "
+                f"recorded as '{source}'.")
+    return (f"Where these numbers come from: a run recorded as '{source}'"
+            + (f", over the {split} half" if split else "")
+            + f", dated {when}.")
 
 
 def _run_rows(conn: sqlite3.Connection, run_id: str | None) -> list[dict]:
@@ -104,6 +145,7 @@ def build(run_id: str | None = None, *,
         "run_id": rows[0]["run_id"],
         "date": run.get("run_date") or rows[0]["as_of"],
         "banner": status.banner(),
+        "provenance": provenance_line(run),
         "expected_false_positives": expected_false_positives(scored, fpr),
         "expectation_line": expectation_line(scored, fpr),
         "fires": [{
@@ -133,6 +175,8 @@ def render_text(d: dict) -> str:
     out.append("=" * len(out[-1]))
     out.append("")
     out.append(d["banner"])
+    out.append("")
+    out.append(d["provenance"])
     out.append("")
     out.append(f"This run looked at {evaluated} "
                f"compan{'y' if evaluated == 1 else 'ies'}: {scored} could be "

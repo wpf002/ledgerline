@@ -7,11 +7,15 @@ rule. Found by adversarial audit before split.json or prereg.json existed.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
+from typer.testing import CliRunner
 
-from ledgerline import signals_v3
+from ledgerline import backtest, calibrate, cli, edgar, signals_v3, status
 from ledgerline.validate import harness
+
+REAL_PHASE0 = status.PHASE0_PATH
 
 
 @pytest.fixture
@@ -210,3 +214,58 @@ def test_calibration_refuses_the_holdout_outright():
 
     with pytest.raises(RuntimeError, match="never touch the holdout"):
         calibrate.build_dataset(split="holdout")
+
+
+def test_no_entry_point_can_score_the_spent_holdout(tmp_path, monkeypatch):
+    """Invariant 5, enforced at every door rather than at most of them.
+
+    calibrate.build_dataset refused the sealed half and cli.replay refused it,
+    but backtest.run() -- the function both the CLI and any future caller go
+    through to score a split -- did not, so `run-test --split holdout` rescored
+    it and overwrote reports/backtest_holdout.json. Every scoring path is
+    walked here with the scorer replaced by a tripwire, so a regression fails
+    this test instead of spending the one measurement the project has left.
+    """
+    def tripwire(*a, **k):
+        raise AssertionError("the sealed half reached the scorer")
+
+    monkeypatch.setattr(edgar, "normalize", tripwire)
+    monkeypatch.setattr(signals_v3, "evaluate", tripwire)
+    monkeypatch.setattr(backtest, "REPORTS", str(tmp_path / "reports"))
+    monkeypatch.setattr(calibrate, "DATASET_PATH", str(tmp_path / "dataset.json"))
+
+    with pytest.raises(RuntimeError, match="retests.json"):
+        backtest.run(split="holdout")
+    with pytest.raises(RuntimeError, match="never touch the holdout"):
+        calibrate.build_dataset(split="holdout")
+    with pytest.raises(RuntimeError, match="never touch the holdout"):
+        calibrate.run(split="holdout")
+    for argv, expect in (
+            (["run-test", "--split", "holdout"], "retests.json"),
+            (["replay", "--split", "holdout"], "no override flag"),
+            (["calibrate", "--split", "holdout"], "never touch the holdout")):
+        result = CliRunner().invoke(cli.app, argv)
+        assert result.exit_code != 0, f"{argv[0]} scored the sealed half"
+        # The tripwire firing means the command reached the scorer before it
+        # refused, which is the defect wearing a non-zero exit code.
+        assert not isinstance(result.exception, AssertionError), \
+            f"{argv[0]} reached the scorer"
+        assert expect in result.output + str(result.exception)
+    assert not os.path.exists(tmp_path / "reports")
+    assert not os.path.exists(tmp_path / "dataset.json")
+
+
+def test_the_holdout_guard_is_keyed_on_the_frozen_record(tmp_path, monkeypatch):
+    """The refusal is keyed on ledgerline/data/phase0.json existing, because
+    that file IS the evidence the shot was taken -- not on a constant that
+    would also have refused the original 2026-08-30 run. With no frozen
+    record there is no verdict to print either, so nothing can show a score
+    on such a machine regardless."""
+    monkeypatch.setattr(status, "PHASE0_PATH", str(tmp_path / "absent.json"))
+    assert status.holdout_is_spent() is False
+    status.refuse_spent_holdout("holdout")  # the machine that has not scored it
+    monkeypatch.setattr(status, "PHASE0_PATH", REAL_PHASE0)
+    assert status.holdout_is_spent() is True
+    with pytest.raises(RuntimeError, match="no override flag"):
+        status.refuse_spent_holdout("holdout")
+    status.refuse_spent_holdout("tuning")  # the practice half is never refused

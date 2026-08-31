@@ -298,3 +298,32 @@ def test_service_is_loopback_only_and_says_unvalidated():
     # deployment artifacts are named only to say they are deliberately absent
     assert "no dockerfile" in readme.lower()
     assert "no deployment or hosting configuration" in readme.lower()
+
+
+def test_digest_says_a_replay_is_a_replay_before_the_first_ticker(isolated_db):
+    """Every saved assessment in this project is a replay over the practice
+    half -- the split the thresholds were fitted on -- and the digest printed
+    those companies as "This run" with `source` and `split` sitting unread in
+    the same payload. The banner caveats the method; this line caveats these
+    particular numbers, and it lands before any company is named."""
+    emit.emit_run([fired_verdict(), quiet_verdict()], source="replay",
+                  run_id="2025-11-15", run_date="2025-11-15", split="tuning")
+    text = digest.render_text(digest.build("2025-11-15"))
+    assert "a replay over the practice half" in text
+    assert "the companies the thresholds were fitted on" in text
+    assert "not a live run" in text
+    banner_at = text.index("failed its own test")
+    assert banner_at < text.index("a replay over") < text.index("TEST")
+
+
+def test_digest_provenance_tracks_the_run_it_describes(isolated_db):
+    """A sentence, not a label: a live run is not described as a replay, and
+    an unrecognised source is named rather than guessed at."""
+    live = digest.provenance_line({"source": "scan", "run_date": "2026-08-14"})
+    assert "a live run on 2026-08-14" in live and "replay" not in live
+    sealed = digest.provenance_line({"source": "replay", "split": "holdout",
+                                     "run_date": "2019-05-15"})
+    assert "over the sealed test half" in sealed
+    unknown = digest.provenance_line({"source": "somethingelse",
+                                      "split": "tuning", "run_date": "x"})
+    assert "somethingelse" in unknown and "tuning" in unknown

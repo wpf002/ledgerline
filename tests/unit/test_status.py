@@ -236,7 +236,8 @@ def test_scan_prints_the_banner_before_the_first_result_line(
             "restatements": 0, "low_coverage": []})
     monkeypatch.setattr(signals_v3, "evaluate",
                         lambda *a, **k: status.stamp(res))
-    cli.scan(days_back=1, as_of=None, score=True, refresh=False)
+    cli.scan(days_back=1, as_of=None, score=True, refresh=False,
+             narrate=False)
     out = capsys.readouterr().out
     assert out.index("NOT VALIDATED") < out.index("FLAGGED")
     status.assert_stamped(res)

@@ -438,11 +438,15 @@ def test_migration_is_idempotent_and_leaves_metrics_untouched(
         conn.close()
 
     conn = sqlite3.connect(str(tmp_path / "state.db"))
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    # Pinned to the module's own version constant, not a literal: the pin is
+    # "migrations ran once and stopped", and later stages append steps.
+    assert (conn.execute("PRAGMA user_version").fetchone()[0]
+            == edgar.SCHEMA_VERSION)
     assert conn.execute("SELECT value FROM metrics").fetchall() == [(100.0,)]
     tables = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"job_runs", "ingest_state", "vintages", "restatements"} <= tables
+    assert {"job_runs", "ingest_state", "vintages", "restatements",
+            "narrations"} <= tables
     cols = {r[1] for r in conn.execute("PRAGMA table_info(filings)")}
     assert "first_seen_run" in cols
     conn.close()

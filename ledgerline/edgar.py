@@ -495,7 +495,7 @@ CREATE TABLE IF NOT EXISTS cost_samples (
 # Later phases append to MIGRATIONS; renumbering an existing step would make a
 # db migrated under one order silently skip another's step, so steps are
 # append-only too.
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
 
 
 def _migration_1(conn: sqlite3.Connection) -> None:
@@ -508,7 +508,44 @@ def _migration_1(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE filings ADD COLUMN first_seen_run INTEGER")
 
 
-MIGRATIONS: list = [_migration_1]
+def _migration_2(conn: sqlite3.Connection) -> None:
+    """narrations: every machine-written narration, keyed on the payload it
+    narrates. payload_sha is IN the primary key on purpose: keyed on
+    (cik, as_of) alone a re-narration after a restatement would UPDATE --
+    silently rewriting a published description of numbers that have since
+    been superseded. With the sha in the key it is a second row and both stay
+    readable. Written with INSERT OR IGNORE, never REPLACE; no scorer reads
+    any column of it (the README invariant that model output never re-enters
+    a scoring decision). claims/failures/payload are TEXT holding JSON,
+    matching how metrics.sources already stores a list; the full payload is
+    stored rather than referenced because the question an audit has to answer
+    is "what did the model actually see", and a pointer to a rebuilt payload
+    answers a different question."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS narrations (
+            cik           TEXT,
+            ticker        TEXT,
+            as_of         TEXT,
+            period        TEXT,
+            payload_sha   TEXT,
+            status        TEXT,          -- narrated | abstained | skipped
+            model         TEXT,
+            endpoint      TEXT,
+            attempts      INTEGER,
+            headline      TEXT,
+            text          TEXT,
+            claims        TEXT,
+            failures      TEXT,
+            reason        TEXT,
+            payload       TEXT,
+            input_tokens  INTEGER,
+            output_tokens INTEGER,
+            created_at    TEXT,
+            PRIMARY KEY (cik, as_of, payload_sha)
+        )""")
+
+
+MIGRATIONS: list = [_migration_1, _migration_2]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

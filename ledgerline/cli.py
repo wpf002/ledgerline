@@ -20,6 +20,12 @@ Records:
     ledgerline provenance AAPL           which SEC filings a reading came from
     ledgerline signals                   every saved assessment, kept verbatim
                                          and permanently
+    ledgerline narrate AAPL              a machine-drafted summary of a flagged
+                                         assessment -- every figure in it is
+                                         checked against the computed numbers,
+                                         or no summary is published
+    ledgerline narrations                the record of every summary written
+                                         or refused, and what each one cost
     ledgerline peers                     which companies have industry peers
                                          to compare against (measured, unused)
     ledgerline publish                   write every saved assessment to one
@@ -63,6 +69,7 @@ from . import backtest, edgar, emit, fullindex, ingest, render, restate, signals
 from . import calibrate as calib
 from . import cost as cost_mod
 from . import coverage as cov
+from . import narrate as narr
 from . import peers as peer_mod
 from . import provenance as prov
 from . import status as phase0
@@ -302,7 +309,13 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                                       help="Re-download the filing history of "
                                            "each company that filed, so today's "
                                            "filing is actually in the data. On "
-                                           "by default.")):
+                                           "by default."),
+         narrate: bool = typer.Option(False, "--narrate",
+                                      help="Also write a short machine-drafted "
+                                           "summary for each company that gets "
+                                           "flagged. Needs --score, costs one "
+                                           "model call per flagged company, "
+                                           "and is off by default.")):
     """Read the SEC's daily filing list and keep watched companies up to date.
 
     One request fetches every filing accepted market-wide that day. Companies
@@ -313,6 +326,11 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
     """
     if not edgar.universe():
         _no_watchlist_exit()
+    if narrate and not score:
+        typer.echo("--narrate summarises flagged assessments, and assessing "
+                   "is opt-in. Run both together:")
+        typer.echo("  ledgerline scan --score --narrate")
+        raise typer.Exit(1)
     if score:
         # The verdict prints BEFORE the first result line. A feed that leads
         # with flags and buries the failed test is an alert with a disclaimer.
@@ -359,6 +377,21 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                               for f in res["flags"])
             typer.echo(f"  {mark} {res['ticker']:6} score {res['score']:5.1f} "
                        "of 100" + (f"  ({names})" if names else ""))
+        if narrate:
+            # Only the flagged results reach the model, under the per-run
+            # budget; unchanged payloads come back from the store for free.
+            for nres in narr.narrate_batch([r for r in out["results"]
+                                            if r.get("gated_in")]):
+                if nres.status == "narrated":
+                    typer.echo(f"  {nres.ticker:6} summary written: "
+                               f"{nres.headline}")
+                elif nres.status == "cached":
+                    typer.echo(f"  {nres.ticker:6} summary unchanged since "
+                               "the last run (nothing new was written)")
+                else:
+                    typer.echo(f"  {nres.ticker:6} no summary -- "
+                               f"{nres.reason}")
+            typer.echo("Read one in full: ledgerline narrate TICKER")
         typer.echo(f"\nAssessed {c['scored']} "
                    f"compan{'y' if c['scored'] == 1 else 'ies'}; "
                    f"{c['gated_in']} flagged.")
@@ -666,6 +699,127 @@ def signals_cmd(ticker: str = typer.Option(None, help="One company's saved "
                    "versions of the detector. Scores from different versions "
                    "must not be averaged together (--json shows each "
                    "entry's version).")
+
+
+@app.command()
+def narrate(ticker: str,
+            as_of: str = typer.Option(None, help="Assess as of this date "
+                                      "(YYYY-MM-DD), using only figures filed "
+                                      "by then. Defaults to today."),
+            dry_run: bool = typer.Option(False, "--dry-run",
+                                         help="Show exactly what would be "
+                                              "sent to the model, without "
+                                              "sending it. Free."),
+            force: bool = typer.Option(False, "--force",
+                                       help="Write a fresh summary even if "
+                                            "these exact numbers were already "
+                                            "summarised. Costs a model call."),
+            as_json: bool = typer.Option(False, "--json",
+                                         help="Machine-readable result "
+                                              "instead of the printed page.")):
+    """Assess one company and, if it is flagged, have a language model draft a
+    short plain-English summary of which measures moved and by how much.
+
+    The model only describes numbers this tool already computed -- a program
+    checks every figure in the draft against them, and if the draft cannot be
+    verified after one correction, no summary is published and the computed
+    sentences stand on their own. Costs one model call per flagged company
+    (set ANTHROPIC_API_KEY or TRIDENT_ENDPOINT); --dry-run costs nothing.
+
+    Exit codes: 0 summary written (or unchanged), 1 not flagged so nothing to
+    summarise, 2 the draft could not be verified.
+    """
+    cik = _resolve(ticker)
+    if not cik:
+        typer.echo(f"{ticker.upper()} is not on your watchlist. Add it first:")
+        typer.echo(f"  ledgerline watch --add {ticker.upper()}")
+        raise typer.Exit(1)
+    res = signals_v3.evaluate(ticker.upper(), cik, as_of=as_of)
+
+    from .narrate import payload as npayload
+    if dry_run:
+        # Builds and prints the full payload without constructing a client:
+        # the measurement tool for prompt size and call volume, and the only
+        # honest way to see the cost before spending it.
+        pl = npayload.build(res)
+        typer.echo(json.dumps(pl, indent=2, sort_keys=True))
+        typer.echo(f"\nPayload fingerprint: {npayload.payload_sha(pl)}",
+                   err=True)
+        typer.echo("Nothing was sent to a model and nothing was spent "
+                   "(--dry-run).", err=True)
+        return
+
+    try:
+        nres = narr.narrate(res, force=force)
+    except RuntimeError as exc:
+        # build_client() already words its refusal for a person: which env
+        # var to set, and that --dry-run is the free alternative.
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    if as_json:
+        typer.echo(phase0.banner(), err=True)
+        typer.echo(json.dumps(nres.as_dict(), indent=2))
+    else:
+        typer.echo(narr.render(nres))
+    if nres.status == "skipped":
+        raise typer.Exit(1)
+    if nres.status == "abstained":
+        raise typer.Exit(2)
+
+
+@app.command()
+def narrations(as_of: str = typer.Option(None, help="Only summaries written "
+                                         "about this assessment date "
+                                         "(YYYY-MM-DD)."),
+               ticker: str = typer.Option(None, help="Only one company's "
+                                          "summaries."),
+               status: str = typer.Option(None, help="Only one outcome: "
+                                          "narrated, abstained, or skipped."),
+               limit: int = typer.Option(50, help="How many entries to show, "
+                                         "newest first.")):
+    """The permanent record of every machine-written summary: what was
+    written, what was refused and why, and what each one cost in tokens.
+
+    A rising number of refusals ('abstained') means the drafts kept failing
+    verification -- a defect in the prompt or the payload, not a model mood,
+    and worth measuring before wiring --narrate into any scheduled job.
+    """
+    conn = edgar.db()
+    q = ("SELECT ticker, as_of, status, attempts, headline, reason, "
+         "input_tokens, output_tokens FROM narrations WHERE 1=1")
+    args: list = []
+    if as_of:
+        q += " AND as_of = ?"
+        args.append(as_of)
+    if ticker:
+        q += " AND ticker = ?"
+        args.append(ticker.upper())
+    if status:
+        q += " AND status = ?"
+        args.append(status)
+    q += " ORDER BY created_at DESC LIMIT ?"
+    args.append(limit)
+    rows = conn.execute(q, args).fetchall()
+    conn.close()
+    if not rows:
+        typer.echo("No summaries recorded yet. They are written by "
+                   "`ledgerline narrate TICKER` or `ledgerline scan --score "
+                   "--narrate`.")
+        return
+    itot = otot = 0
+    for tick, day, st, attempts, headline, reason, itok, otok in rows:
+        itot += itok or 0
+        otot += otok or 0
+        if st == "narrated":
+            typer.echo(f"  {day}  {tick:6} summary written: {headline}")
+        elif st == "abstained":
+            typer.echo(f"  {day}  {tick:6} refused after {attempts} "
+                       f"attempt{'s' if attempts != 1 else ''} -- {reason}")
+        else:
+            typer.echo(f"  {day}  {tick:6} {st} -- {reason}")
+    typer.echo(f"\n{len(rows)} entr{'y' if len(rows) == 1 else 'ies'} shown, "
+               f"newest first; {itot:,} tokens sent to the model and "
+               f"{otot:,} received across them.")
 
 
 @app.command()

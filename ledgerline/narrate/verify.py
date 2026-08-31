@@ -14,14 +14,28 @@ number attached to it. Five checks per claim instead, all deterministic:
       payload["quiet"] below the trigger. The gate's own coverage lesson:
       present-but-quiet is not fired, exactly as scoreable=False is not
       score=0.0;
-  (c) every cited dotted path resolves in the payload;
+  (c) every cited dotted path resolves in the payload AND names a single
+      leaf, not a container. A container citation is what made (d) collapse:
+      payload.resolve() returns whatever a dotted path names, so `cites:
+      ["flags"]` flattened every number in the payload into one claim's
+      traceable set, and eight such citations -- inside the schema's own
+      maxItems cap -- reproduced the whole-payload number index exactly.
+      That is the global-index matching (d) exists to prevent, restored by
+      a citation the schema was happy to accept;
   (d) every numeric literal in the prose matches, within the half-ulp of its
       own printed precision, a value at one of THAT CLAIM'S OWN cited paths
       -- not merely somewhere in the payload. This is the anti-gaming check:
       global-index matching would pass an invented figure beside six
       unrelated citations, which is a check in name only;
-  (e) direction words agree with the flag's declared direction -- traceable
-      numbers do not imply a true relation.
+  (e) the claim states the direction the flag declares, and states no other.
+      Both halves are load-bearing. Banning the wrong-direction words alone
+      was a closed wordlist and therefore always incomplete: "improved",
+      "strengthened", "grows" and "accelerated" each asserted that a value
+      ROSE against a flag that fired because it FELL, and each passed. A
+      list of forbidden words can never be finished, so the check is
+      inverted -- a claim must carry a word from the RIGHT set, and a claim
+      carrying none is refused. Being wrong about that costs prose; being
+      wrong the other way publishes an inverted relation.
 
 Plus the banned lexicon, which makes "validated", "predict", "will",
 "recommend" mechanically unwritable. It fails closed: the cost of a false
@@ -64,17 +78,58 @@ BANNED: tuple[tuple[str, re.Pattern], ...] = (
         re.IGNORECASE)),
 )
 
-UP_WORDS: frozenset[str] = frozenset({
-    "rose", "rising", "risen", "increase", "increased", "increasing",
-    "climbed", "climbing", "grew", "growing", "widened", "widening",
-    "expanded", "expanding", "jumped", "surged", "higher", "up",
-})
-DOWN_WORDS: frozenset[str] = frozenset({
-    "fell", "falling", "fallen", "decline", "declined", "declining",
-    "dropped", "dropping", "decrease", "decreased", "decreasing",
-    "shrank", "shrinking", "narrowed", "narrowing", "contracted",
-    "contracting", "collapsed", "lower", "down",
-})
+def _inflect(*roots: str) -> set[str]:
+    """A verb root and its ordinary present/past/participle forms.
+
+    Hand-maintained direction lists drift in ways nobody can see by reading
+    them: "grew" and "growing" were banned while "grows" was not, "rose" and
+    "rising" while "rise" and "rises" were not, "dropped" while "drops" was
+    not. Generating the forms from a root removes that whole class of gap.
+    Irregular and consonant-doubled forms are still listed by hand beside
+    each call -- English has no rule this function could apply.
+    """
+    out: set[str] = set()
+    for r in roots:
+        out.add(r)
+        if r.endswith("e"):
+            out.update({r + "s", r + "d", r[:-1] + "ing"})
+        elif r.endswith(("s", "x", "z", "ch", "sh")):
+            out.update({r + "es", r + "ed", r + "ing"})
+        else:
+            out.update({r + "s", r + "ed", r + "ing"})
+    return out
+
+
+# The value went UP / went DOWN. These describe the raw movement and are
+# read against the flag's declared direction: a fired -1 flag means the value
+# fell, so UP_WORDS contradict it, and a fired +1 flag means it rose.
+UP_WORDS: frozenset[str] = frozenset(
+    _inflect("rise", "increase", "climb", "grow", "widen", "expand", "jump",
+             "surge", "accelerate", "spike", "escalate", "mount")
+    | {"rose", "risen", "grew", "grown", "higher", "up", "upward", "upwards",
+       "above"})
+DOWN_WORDS: frozenset[str] = frozenset(
+    _inflect("fall", "decline", "drop", "decrease", "shrink", "narrow",
+             "contract", "collapse", "slip", "slide", "sink", "plunge",
+             "tumble", "soften", "compress", "subside")
+    | {"fell", "fallen", "dropped", "dropping", "shrank", "shrunk",
+       "slipped", "slipping", "lower", "down", "downward", "downwards",
+       "below"})
+
+# The metric got BETTER / got WORSE. These are not movement words: whether
+# "improved" means up or down depends on the flag's sign, and a fired flag
+# ALWAYS means the metric got worse. So BETTER_WORDS contradict any fired
+# flag whichever way it points, and WORSE_WORDS satisfy any of them. Missing
+# this distinction is what let "improved to 0.167" and "eased to 3.313" pass
+# against flags that fired because the company deteriorated.
+BETTER_WORDS: frozenset[str] = frozenset(
+    _inflect("improve", "strengthen", "recover", "rebound", "ease",
+             "normalise", "normalize", "stabilise", "stabilize", "heal",
+             "repair")
+    | {"better", "healthier", "stronger", "healthy"})
+WORSE_WORDS: frozenset[str] = frozenset(
+    _inflect("deteriorate", "weaken", "worsen", "erode", "degrade")
+    | {"worse", "weaker", "weak"})
 
 
 @dataclass(frozen=True)
@@ -107,6 +162,10 @@ def parse_literal(tok: str) -> list[tuple[float, float]]:
     properly writes "41.2%". A bare integer carries half_ulp 0.5 -- looser
     than a decimal, deliberately uniform, and pinned by a test rather than
     accidental.
+
+    The face-value candidate for a percent token is a READING, not a licence:
+    which of the two readings is legitimate depends on the units of the value
+    being matched, which this function cannot see. matches() decides that.
     """
     is_pct = tok.endswith("%")
     core = tok.rstrip("%").lstrip("+").replace("$", "").replace(",", "")
@@ -119,18 +178,53 @@ def parse_literal(tok: str) -> list[tuple[float, float]]:
     return out
 
 
-def _numeric_leaves(node: object) -> list[float]:
-    """Numeric values reachable from one resolved citation. bool first --
-    it is a subclass of int (see payload.number_index)."""
+def matches(tok: str, target: float) -> bool:
+    """Does one printed literal name this payload value?
+
+    Not simply "any candidate within its own half-ulp", because the face
+    value of a percent token carries the half-ulp of its PRINTED precision
+    rather than a tolerance in the payload's units. For a 0-decimal token
+    that half-ulp is 0.5, so "0%" sat within tolerance of ocf_to_revenue's
+    0.16652 and verified as a true statement that a company generated no
+    cash per dollar of sales when it generated 16.7 cents. Units confusion
+    -- 0.287 written as 28.7% -- is the exact class this verifier exists to
+    catch, and it was passing at 100x the wrong scale.
+
+    The rule: a percent token may be read at face value only against a value
+    already in percent units, and every ratio this gate stores is a fraction.
+    So a target of magnitude <= 1 gets the /100 reading only. A payload that
+    genuinely held a sub-1 percent-unit value would see the claim refused --
+    which costs prose, not correctness, and is the direction this module
+    fails in by design.
+    """
+    # parse_literal puts the face reading first and the /100 fraction, when
+    # there is one, second. A percent token against a fraction-scale target
+    # keeps only the second.
+    readings = parse_literal(tok)
+    if tok.endswith("%") and abs(target) <= 1.0:
+        readings = readings[1:]
+    return any(abs(target - v) <= hu for v, hu in readings)
+
+
+def _leaf_number(node: object) -> float | None:
+    """The number a resolved citation names, or None if it names something
+    else (a string, a null, a bool).
+
+    Deliberately NOT recursive, and it must never become recursive again.
+    The recursive version flattened every number under a container into the
+    claim's traceable set, so `cites: ["flags"]` handed one claim the whole
+    payload's numbers and another flag's z could be published as this
+    flag's. A citation names one number; verify() rejects a container
+    outright (CITATION_NOT_A_LEAF) rather than digging through it.
+
+    bool is checked FIRST -- it is a subclass of int, and True would
+    otherwise be citeable as the figure 1 (see payload.number_index).
+    """
     if isinstance(node, bool):
-        return []
+        return None
     if isinstance(node, (int, float)):
-        return [float(node)]
-    if isinstance(node, dict):
-        return [x for v in node.values() for x in _numeric_leaves(v)]
-    if isinstance(node, list):
-        return [x for v in node for x in _numeric_leaves(v)]
-    return []
+        return float(node)
+    return None
 
 
 def _banned(text: str, claim: int, out: list[Failure]) -> None:
@@ -197,17 +291,24 @@ def verify(narration: Narration, payload: dict) -> list[Failure]:
                     "BAD_CITATION", i, path,
                     "this path resolves to nothing in the payload; an "
                     "invented path is an invented source"))
+            elif isinstance(node, (dict, list)):
+                # Check (c)'s second half. Without it `cites: ["flags"]` is
+                # a schema-valid citation that hands the claim every number
+                # in the payload, and check (d) below degenerates into the
+                # global-index matching it exists to prevent.
+                failures.append(Failure(
+                    "CITATION_NOT_A_LEAF", i, path,
+                    "this path names a group of values, not one value; a "
+                    "citation that covers everything traces nothing"))
             else:
-                cited_values.extend(_numeric_leaves(node))
+                leaf = _leaf_number(node)
+                if leaf is not None:
+                    cited_values.append(leaf)
 
         # Check (d), the anti-gaming check: each literal must match a value
         # reachable from THIS claim's own citations.
         for tok in literals(claim.text):
-            ok = any(
-                abs(target - v) <= hu
-                for target in cited_values
-                for v, hu in parse_literal(tok)
-            )
+            ok = any(matches(tok, target) for target in cited_values)
             if not ok:
                 failures.append(Failure(
                     "UNTRACEABLE_NUMBER", i, tok,
@@ -225,16 +326,33 @@ def verify(narration: Narration, payload: dict) -> list[Failure]:
         # Check (e): the direction the prose asserts must be the direction
         # the flag declares. A fired flag's signed z is positive, so the
         # underlying value moved WITH TRACKED's declared direction: -1 means
-        # it fell, +1 means it rose.
+        # it fell, +1 means it rose. Either way the metric got WORSE -- that
+        # is what firing means -- so a claim that the company improved
+        # contradicts the flag whichever way the flag points.
         if fired and name in signals_v3.TRACKED:
             direction = signals_v3.TRACKED[name][0]
+            moved = "fell" if direction < 0 else "rose"
             words = set(re.findall(r"[a-z]+", claim.text.lower()))
-            wrong = words & (UP_WORDS if direction < 0 else DOWN_WORDS)
+            right = (DOWN_WORDS if direction < 0 else UP_WORDS)
+            wrong = words & ((UP_WORDS if direction < 0 else DOWN_WORDS)
+                             | BETTER_WORDS)
             if wrong:
-                moved = "fell" if direction < 0 else "rose"
                 failures.append(Failure(
                     "DIRECTION_MISMATCH", i, sorted(wrong)[0],
-                    f"the underlying value {moved}; a traceable number does "
-                    "not license an untrue relation"))
+                    f"the underlying value {moved} and the measure got "
+                    "worse; a traceable number does not license an untrue "
+                    "relation"))
+            elif not (words & (right | WORSE_WORDS)):
+                # The inversion. A closed list of forbidden words can never
+                # be finished -- "improved", "strengthened", "grows" and
+                # "accelerated" all asserted a rise against a flag that
+                # fired on a fall, and all passed -- so the claim must say
+                # which way the value went rather than merely avoid saying
+                # it wrongly. An incomplete RIGHT list only costs prose.
+                failures.append(Failure(
+                    "DIRECTION_UNSTATED", i, "",
+                    f"the underlying value {moved}; say so in the claim -- a "
+                    "figure with no stated direction leaves the reader to "
+                    "supply one"))
 
     return failures

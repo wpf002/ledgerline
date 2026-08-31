@@ -1,9 +1,13 @@
 """
 Every string the model ever sees, in one auditable place.
 
-The system prompt states the four rules the verifier enforces, in the
-verifier's own terms, so the model is aimed at the check rather than left to
-guess it. It carries the KILL as context, not as a formatting instruction:
+The system prompt states the rules the verifier enforces, in the verifier's
+own terms, so the model is aimed at the check rather than left to guess it.
+When a check moves, this text moves with it: the leaf-citation rule and the
+stated-direction rule are here because prose that failed them was published,
+and a model told only "cite your paths" writes `cites: ["flags"]`.
+
+It carries the KILL as context, not as a formatting instruction:
 the reader will see the failure banner above the model's text, rendered by
 run.render() from the committed record -- the model is forbidden from writing
 the disclosure itself, because a model-authored disclaimer can be softened,
@@ -32,11 +36,19 @@ Hard rules -- a deterministic verifier rejects your response if any fails:
 were computed and stayed normal; they did not fire and you may not say they \
 did.
 2. Cite, for every claim, the exact dotted payload paths the numbers in your \
-sentence come from (e.g. "flags.gross_margin.z"). Every number you write must \
-match a value at one of YOUR OWN cited paths, at the precision you print it.
+sentence come from (e.g. "flags.gross_margin.z"). Each path must name ONE \
+value, never a group: "flags.gross_margin.z" is a citation, "flags" and \
+"flags.gross_margin" are not. Every number you write must match a value at \
+one of YOUR OWN cited paths, at the precision you print it.
 3. Write no number and no date you did not read from the payload. Rounding \
-to fewer digits is fine; inventing is not.
-4. Describe what the arithmetic shows -- how far a measure sits from this \
+to fewer digits is fine; inventing is not. A ratio is stored as a fraction: \
+0.4123 is written either as 0.412 or as 41.2%, never as 0.4%.
+4. Say which way each measure moved, in the sentence, and say it correctly. \
+A measure that fired moved AGAINST the company: if the payload's "direction" \
+is -1 the value fell, if it is +1 the value rose, and either way the measure \
+got worse. A claim that states no direction is rejected, and so is one that \
+calls the move an improvement.
+5. Describe what the arithmetic shows -- how far a measure sits from this \
 company's own trailing median. Never what it implies about the future: no \
 predictions, no advice, no words like "will", "likely", "expect", \
 "recommend", and no verdicts on the company.
@@ -54,10 +66,13 @@ wording for what each measure means.
 """
 
 _PATH_HELP = """\
-Citation paths are dotted keys into the JSON payload below, e.g.
+Citation paths are dotted keys into the JSON payload below, and each one must
+land on a single value rather than on a group of them, e.g.
   flags.gross_margin.z          the sigma move of the gross_margin flag
   flags.gross_margin.value      its current value
   summary.n_fired               how many measures fired
+  flags                         REJECTED -- a group, not a value
+  flags.gross_margin            REJECTED -- a group, not a value
 Worked example claim:
   {"text": "Gross margin came in at 31.2%, a 2.6-sigma move below this \
 company's own trailing median of 40.8%.",

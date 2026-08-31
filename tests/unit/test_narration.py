@@ -100,6 +100,10 @@ def mini_payload() -> dict:
     }
 
 
+# Claim texts here carry an explicit "fell": gross_margin declares direction
+# -1, and check (e) requires a fired claim to state the direction rather than
+# merely avoid contradicting it. The verb is scaffolding for the decision each
+# test actually pins, not part of it.
 def narration(text: str, diagnostic: str = "gross_margin",
               cites: list[str] | None = None,
               headline: str = "A label") -> nschema.Narration:
@@ -113,6 +117,21 @@ def narration(text: str, diagnostic: str = "gross_margin",
 
 def codes(failures: list[nverify.Failure]) -> list[str]:
     return [f.code for f in failures]
+
+
+def real_payload() -> dict:
+    """The GATED verdict's own payload: THREE fired flags, which is what the
+    single-flag mini_payload cannot express. A verifier hole that lets one
+    flag's numbers be published as another's is invisible when only one flag
+    exists."""
+    return npayload.build(GATED)
+
+
+def claim(text: str, diagnostic: str, cites: list[str]) -> nschema.Narration:
+    return nschema.Narration(
+        headline="A label",
+        claims=[nschema.Claim(text=text, diagnostic=diagnostic, cites=cites)],
+        abstain=False)
 
 
 # ------------------------------------------------------------- the cost gate
@@ -146,7 +165,8 @@ def test_a_number_absent_from_the_payload_fails_verification():
     """A sentence can name a diagnostic truthfully and still invent the
     number attached to it -- the exact weakness of the ROADMAP's
     'maps to a diagnostic' check."""
-    fails = nverify.verify(narration("a 9.9-sigma move"), mini_payload())
+    fails = nverify.verify(narration("margin fell, a 9.9-sigma move"),
+                           mini_payload())
     assert codes(fails) == ["UNTRACEABLE_NUMBER"]
     assert fails[0].token == "9.9"
 
@@ -154,8 +174,10 @@ def test_a_number_absent_from_the_payload_fails_verification():
 def test_a_rounded_number_within_its_printed_precision_passes():
     """The half-ulp of the token's own printed precision IS the tolerance:
     z 2.4382 written as '2.4' is rounding; '2.5' is invention."""
-    assert nverify.verify(narration("a 2.4-sigma move"), mini_payload()) == []
-    fails = nverify.verify(narration("a 2.5-sigma move"), mini_payload())
+    assert nverify.verify(narration("margin fell, a 2.4-sigma move"),
+                          mini_payload()) == []
+    fails = nverify.verify(narration("margin fell, a 2.5-sigma move"),
+                           mini_payload())
     assert codes(fails) == ["UNTRACEABLE_NUMBER"]
 
 
@@ -164,9 +186,9 @@ def test_a_percent_literal_matches_a_stored_fraction():
     '41.2%' -- the dual-candidate parse for '%' makes that legal without
     letting '41.9%' through."""
     cites = ["flags.gross_margin.value"]
-    ok = narration("margin came in at 41.2%", cites=cites)
+    ok = narration("margin fell to 41.2%", cites=cites)
     assert nverify.verify(ok, mini_payload()) == []
-    bad = narration("margin came in at 41.9%", cites=cites)
+    bad = narration("margin fell to 41.9%", cites=cites)
     assert codes(nverify.verify(bad, mini_payload())) == ["UNTRACEABLE_NUMBER"]
 
 
@@ -196,7 +218,7 @@ def test_a_literal_must_match_a_value_at_its_own_cited_paths():
     """THE anti-gaming check: 17 exists in the payload (baseline_n), but this
     claim does not cite it -- global-index matching would pass this and the
     whole verifier would be theatre."""
-    n = narration("a 2.4-sigma move over its last 17 readings",
+    n = narration("margin fell, a 2.4-sigma move over its last 17 readings",
                   cites=["flags.gross_margin.z"])
     fails = nverify.verify(n, mini_payload())
     assert codes(fails) == ["UNTRACEABLE_NUMBER"]
@@ -208,9 +230,9 @@ def test_iso_dates_verify_against_the_date_index_not_the_number_scan():
     untraceable numbers -- and a date absent from the payload is its own
     failure, checked against dates only."""
     assert nverify.literals("as of 2024-03-31") == []
-    ok = narration("figures filed by 2024-03-15", cites=[])
+    ok = narration("margin fell in figures filed by 2024-03-15", cites=[])
     assert nverify.verify(ok, mini_payload()) == []
-    bad = narration("figures filed by 2024-06-30", cites=[])
+    bad = narration("margin fell in figures filed by 2024-06-30", cites=[])
     assert codes(nverify.verify(bad, mini_payload())) == ["UNTRACEABLE_DATE"]
 
 
@@ -244,6 +266,138 @@ def test_a_direction_word_contradicting_the_flag_direction_is_rejected():
     untrue relation."""
     n = narration("gross margin rose sharply, a 2.4-sigma move")
     assert "DIRECTION_MISMATCH" in codes(nverify.verify(n, mini_payload()))
+
+
+def test_a_container_citation_is_rejected_before_it_can_launder_numbers():
+    """Check (c)'s leaf requirement, and the defect that motivated it: cites
+    ["flags"] resolved to the whole flags container, _numeric_leaves()
+    flattened every number under it into this claim's traceable set, and the
+    anti-gaming check degenerated into exactly the payload-wide matching the
+    module docstring says it exists to prevent. Reproduces the reported case:
+    an ocf_to_revenue claim carrying cash_conversion_gap's sigma move passed
+    with zero failures under a container citation and failed under honest
+    leaf citations -- the same sentence, both times."""
+    pl = real_payload()
+    other = pl["flags"]["cash_conversion_gap"]
+    text = f"Cash generation fell, a {other['z']:.1f}-sigma move."
+    laundered = claim(text, "ocf_to_revenue", ["flags"])
+    fails = codes(nverify.verify(laundered, pl))
+    assert "CITATION_NOT_A_LEAF" in fails
+    assert "UNTRACEABLE_NUMBER" in fails, (
+        "the borrowed figure must still be caught once the container is "
+        "refused -- otherwise the leaf rule only moves the hole")
+    # The control: honest leaf citations reject the same sentence, which is
+    # what proves the container citation was the thing defeating check (d).
+    honest = claim(text, "ocf_to_revenue", ["flags.ocf_to_revenue.z"])
+    assert codes(nverify.verify(honest, pl)) == ["UNTRACEABLE_NUMBER"]
+
+
+def test_a_flag_object_citation_is_a_container_too():
+    """The shape the prompt's own worked example invited: citing the whole
+    flag object let baseline_scale be published as both the current value and
+    the trailing median. One level down is still a group, not a value."""
+    pl = real_payload()
+    scale = pl["flags"]["ocf_to_revenue"]["baseline_scale"]
+    n = claim(f"Cash generation fell to {scale:.3f}, from a median of "
+              f"{scale:.3f}.", "ocf_to_revenue", ["flags.ocf_to_revenue"])
+    assert "CITATION_NOT_A_LEAF" in codes(nverify.verify(n, pl))
+
+
+def test_container_citations_no_longer_reproduce_the_payload_number_index():
+    """The quantified form of the same defect: eight container citations --
+    inside the schema's own maxItems cap of 8 -- used to hand one claim every
+    numeric leaf in the payload. Nothing citeable may now contribute more
+    than the one number it names."""
+    pl = real_payload()
+    containers = ["flags", "quiet", "summary", "provenance", "status"]
+    for path in containers:
+        node = npayload.resolve(pl, path)
+        assert isinstance(node, (dict, list)), path
+        n = claim("Cash generation fell.", "ocf_to_revenue", [path])
+        assert "CITATION_NOT_A_LEAF" in codes(nverify.verify(n, pl)), path
+
+
+def test_a_percent_literal_may_not_verify_at_a_hundred_times_the_scale():
+    """Units confusion -- 0.287 written as 28.7% -- is the class this
+    verifier names in its own docstring, and it was passing at 100x the wrong
+    scale. parse_literal returns both readings of a percent token, and the
+    face-value reading carried the half-ulp of its PRINTED precision: 0.5 for
+    "0%", which swallows every fraction in [-0.5, 0.5]. So prose could state
+    that a company generated 0% cash per dollar of sales while the payload
+    said 16.7%, published under 'checked by a program before printing'."""
+    pl = real_payload()
+    value = pl["flags"]["ocf_to_revenue"]["value"]
+    assert 0.1 < value < 0.2, "the fixture must be a fraction near 16.7%"
+    cites = ["flags.ocf_to_revenue.value"]
+    for wrong in ("0%", "0.2%", "0.4%"):
+        n = claim(f"Cash generated per dollar of sales fell to {wrong} of "
+                  "revenue.", "ocf_to_revenue", cites)
+        assert codes(nverify.verify(n, pl)) == ["UNTRACEABLE_NUMBER"], wrong
+    # The reading that IS legitimate still passes: the fix withholds the
+    # face-value candidate, it does not ban percent prose.
+    ok = claim(f"Cash generated per dollar of sales fell to {value:.1%} of "
+               "revenue.", "ocf_to_revenue", cites)
+    assert nverify.verify(ok, pl) == []
+
+
+@pytest.mark.parametrize("verb", [
+    "improved", "strengthened", "grows", "accelerated", "rises", "recovered",
+    "climbs", "increases", "jumped",
+])
+def test_prose_asserting_the_opposite_of_a_falling_flag_is_refused(verb):
+    """ocf_to_revenue declares direction -1, so a fired flag means the value
+    FELL. Only "rose" and a handful of its inflections were banned; every
+    verb here returned an EMPTY failure list while asserting the value went
+    up. The closed wordlist could not be completed, so the check now also
+    requires the right direction to be stated."""
+    pl = real_payload()
+    value = pl["flags"]["ocf_to_revenue"]["value"]
+    n = claim(f"Cash generated per dollar of sales {verb} to {value:.3f}.",
+              "ocf_to_revenue", ["flags.ocf_to_revenue.value"])
+    assert "DIRECTION_MISMATCH" in codes(nverify.verify(n, pl)), verb
+
+
+@pytest.mark.parametrize("verb", [
+    "eased", "narrows", "improved", "subsided", "falls", "drops", "softened",
+])
+def test_prose_asserting_the_opposite_of_a_rising_flag_is_refused(verb):
+    """The +1 side, which the report did not test and which was equally
+    broken: cash_conversion_gap fires when the gap WIDENS, and only "fell"
+    tripped the check. "eased", "narrows" and "improved" each said the gap
+    got smaller."""
+    pl = real_payload()
+    value = pl["flags"]["cash_conversion_gap"]["value"]
+    n = claim(f"The gap between reported profit and cash {verb} to "
+              f"{value:.3f}.", "cash_conversion_gap",
+              ["flags.cash_conversion_gap.value"])
+    assert "DIRECTION_MISMATCH" in codes(nverify.verify(n, pl)), verb
+
+
+def test_a_claim_that_states_no_direction_at_all_is_refused():
+    """The inversion, and the reason for it: a list of forbidden words can
+    never be finished, so a claim must carry a word from the RIGHT set rather
+    than merely dodge the wrong one. An unlisted synonym now costs prose
+    instead of publishing an inverted relation."""
+    pl = real_payload()
+    value = pl["flags"]["ocf_to_revenue"]["value"]
+    mute = claim(f"Cash generated per dollar of sales stood at {value:.3f}.",
+                 "ocf_to_revenue", ["flags.ocf_to_revenue.value"])
+    assert codes(nverify.verify(mute, pl)) == ["DIRECTION_UNSTATED"]
+    stated = claim(f"Cash generated per dollar of sales fell to {value:.3f}.",
+                   "ocf_to_revenue", ["flags.ocf_to_revenue.value"])
+    assert nverify.verify(stated, pl) == []
+
+
+def test_the_citation_pattern_mirrors_the_leaf_rule_into_the_schema():
+    """A provider-side hint, not the check -- but a schema that accepted
+    "flags" is what made the container citation ordinary model output."""
+    import re
+    pat = re.compile(nschema.CITATION_PATTERN)
+    for good in ("flags.gross_margin.z", "score", "quiet.dso",
+                 "summary.n_fired", "provenance.gross_margin.revenue.form"):
+        assert pat.match(good), good
+    for bad in ("flags", "flags.gross_margin", "provenance", "quiet", ""):
+        assert not pat.match(bad), bad
 
 
 def test_a_headline_containing_a_number_is_rejected():

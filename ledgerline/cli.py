@@ -1465,6 +1465,11 @@ def resolve(as_of: str = typer.Option(None, help="Judge outcomes using only "
     company later revised is recorded as a second entry beside the first,
     never as an overwrite -- what was believed on each date stays on record.
     Designed to run right after `ledgerline scan`.
+
+    An assessment being judged for the first time is judged as of the date
+    its answer first became possible, not as of today, so its first entry
+    holds what a reader could have known then rather than everything filed
+    since.
     """
     out = trackrec.resolve(as_of=as_of, gate_version=gate_version)
     typer.echo(f"Newly judged: {out['resolved']}. "
@@ -1472,6 +1477,15 @@ def resolve(as_of: str = typer.Option(None, help="Judge outcomes using only "
                f"Already judged, unchanged: {out['unchanged']}.")
     typer.echo(f"Still waiting on future filings: {out['pending']} "
                f"(plus {out['immature']} too recent to even check yet).")
+    if out["same_day_conflict"]:
+        # Never silent: the record for that day already exists and this
+        # table is never overwritten, so the changed answer waits for
+        # tomorrow's date rather than being lost.
+        typer.echo(
+            f"Held over to the next run: {out['same_day_conflict']}. An "
+            "answer already went on record for these today, and a day's "
+            "record is never rewritten -- the revised answer is filed under "
+            "the next day it is judged.")
     typer.echo("See where things stand: ledgerline track")
 
 

@@ -20,6 +20,18 @@ The decisions that carry the honesty:
     outcome is a second row beside the first, never an overwrite. resolve()
     truncates facts with edgar.as_of() before labeling, so every past
     resolution is reproducible forever from the vintage store.
+  * A resolution is dated when it became POSSIBLE, not when the loop ran. A
+    signal's first row is judged at earliest_resolvable(), so it holds what
+    a reader could have computed the day the window closed; the run date is
+    used only for the second pass that notices what has been restated since.
+    Stamping every row with the run date made the first row -- the one
+    resolutions(revisions='first') calls hindsight-free -- carry every
+    filing made in the years between, which for the replayed backlog is up
+    to twenty of them.
+  * A count never claims a write that did not happen. resolved_at is in the
+    primary key, so a second flip on the same calendar day cannot be
+    appended and is not overwritten either; it is counted apart, reported,
+    and picked up by the next run under its own date.
   * PENDING is a return value, never a stored row. A signal whose forward
     window is shorter than the horizon writes nothing; counting it CLEAN
     would manufacture precision out of the calendar (the same shape of defect
@@ -162,6 +174,38 @@ def resolve_signal(row: dict, horizon_q: int, resolution_date: str,
     }
 
 
+def _resolution_dates(sig_as_of: str, horizon_q: int, as_of: str,
+                      has_prior: bool) -> list[str]:
+    """The dates this run should judge one signal-horizon at, oldest first.
+
+    The FIRST row a signal ever gets belongs at the date its window closed,
+    not at whatever date this loop happens to run. resolve() used to stamp
+    every row with the run date, which is harmless for a signal assessed
+    yesterday and false for the 39,564 replayed evaluations dated 2005-2025:
+    their first stored row carried up to twenty years of later filings, and
+    resolutions(revisions='first') -- documented as the outcome as it was
+    FIRST known, the view that is not lookahead -- returned it. Measured on a
+    500-signal sample, about 1% of first-known outcomes flipped, not only on
+    the RESTATEMENT criterion: edgar.as_of() picks the newest vintage at the
+    cutoff, so a later restatement moves the metric VALUES too, and CLEAN
+    became DETERIORATED on REVENUE_DECEL and MARGIN_COLLAPSE as well.
+
+    So: a signal already on record is judged at the run date, exactly as
+    before -- that pass is what notices a restatement filed since and
+    appends it as a revision. A signal with nothing on record is judged at
+    earliest_resolvable() first, and then at the run date as well if the run
+    date is later. A signal that matured today gets one date, because the
+    two are the same day.
+
+    The caller has already established that as_of >= earliest_resolvable();
+    an immature signal never reaches here.
+    """
+    earliest = earliest_resolvable(sig_as_of, horizon_q)
+    if has_prior:
+        return [as_of]
+    return [earliest] + ([as_of] if as_of > earliest else [])
+
+
 def resolve(as_of: str | None = None, gate_version: str | None = None,
             horizons: tuple[int, ...] = HORIZONS,
             normalizer: Callable[[str], dict] | None = None,
@@ -173,12 +217,23 @@ def resolve(as_of: str | None = None, gate_version: str | None = None,
     quiet data is a no-op. A changed outcome -- a restatement flipped the
     label -- APPENDS a second row, counted as revised; the original row is
     history and stays.
+
+    Two counts exist because two things can go wrong quietly:
+      * `pending` is one per signal-horizon with no terminal answer, never
+        one per date tried, so a backlogged signal judged at two dates is
+        still one pending signal.
+      * `same_day_conflict` is a flip that could not be appended because a
+        row already stands at that resolved_at. The append used to be
+        counted as `revised` without ever reading cur.rowcount, so a
+        restatement picked up by a second `resolve` on the same day was
+        reported as recorded and silently dropped. It is not lost -- the
+        next run's date differs and appends it -- but the run says so.
     """
     as_of = as_of or date.today().isoformat()
     gate = gate_version or emit.gate_version()
     normalizer = normalizer or edgar.normalize
     counts = {"resolved": 0, "revised": 0, "unchanged": 0, "pending": 0,
-              "immature": 0}
+              "immature": 0, "same_day_conflict": 0}
     own = conn is None
     if own:
         conn = edgar.db()
@@ -195,34 +250,48 @@ def resolve(as_of: str | None = None, gate_version: str | None = None,
                 if as_of < earliest_resolvable(sig_as_of, h):
                     counts["immature"] += 1
                     continue
-                if cik not in norms:
-                    norms[cik] = normalizer(cik)
-                res = resolve_signal(
-                    {"signal_id": signal_id, "cik": cik, "ticker": ticker,
-                     "as_of": sig_as_of}, h, as_of, norms[cik])
-                if res["outcome"] == "PENDING":
-                    counts["pending"] += 1
-                    continue
                 prior = conn.execute(
                     "SELECT outcome, event_period FROM signal_scores "
                     "WHERE signal_id = ? AND horizon_q = ? "
                     "ORDER BY resolved_at DESC LIMIT 1",
                     (signal_id, h)).fetchone()
-                if prior and (prior[0], prior[1]) == (res["outcome"],
-                                                      res["event_period"]):
-                    counts["unchanged"] += 1
-                    continue
-                with conn:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO signal_scores (signal_id, "
-                        "horizon_q, resolved_at, outcome, event_period, "
-                        "n_quarters_observed, criteria, label_rule) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
-                        (res["signal_id"], res["horizon_q"],
-                         res["resolved_at"], res["outcome"],
-                         res["event_period"], res["n_quarters_observed"],
-                         json.dumps(res["criteria"]), res["label_rule"]))
-                counts["revised" if prior else "resolved"] += 1
+                settled = prior is not None
+                for rdate in _resolution_dates(sig_as_of, h, as_of,
+                                               prior is not None):
+                    if cik not in norms:
+                        norms[cik] = normalizer(cik)
+                    res = resolve_signal(
+                        {"signal_id": signal_id, "cik": cik, "ticker": ticker,
+                         "as_of": sig_as_of}, h, rdate, norms[cik])
+                    if res["outcome"] == "PENDING":
+                        # The deciding filings had not arrived by rdate. A
+                        # later date in this same list may still settle it.
+                        continue
+                    settled = True
+                    if prior and (prior[0], prior[1]) == (res["outcome"],
+                                                          res["event_period"]):
+                        counts["unchanged"] += 1
+                        continue
+                    with conn:
+                        cur = conn.execute(
+                            "INSERT OR IGNORE INTO signal_scores (signal_id, "
+                            "horizon_q, resolved_at, outcome, event_period, "
+                            "n_quarters_observed, criteria, label_rule) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (res["signal_id"], res["horizon_q"],
+                             res["resolved_at"], res["outcome"],
+                             res["event_period"], res["n_quarters_observed"],
+                             json.dumps(res["criteria"]), res["label_rule"]))
+                    if cur.rowcount == 0:
+                        # (signal_id, horizon_q, resolved_at) is the primary
+                        # key and this table is append-only, so the flip
+                        # cannot be written today and must not be claimed.
+                        counts["same_day_conflict"] += 1
+                        continue
+                    counts["revised" if prior else "resolved"] += 1
+                    prior = (res["outcome"], res["event_period"])
+                if not settled:
+                    counts["pending"] += 1
     finally:
         if own:
             conn.close()
@@ -242,6 +311,11 @@ def resolutions(gate_version: str, horizon_q: int, *,
     (a later restatement is real information, but re-grading history with it
     is lookahead). 'latest' and 'all' exist for auditing; 'all' rows carry a
     `revision` index so a flip is visible as a flip.
+
+    'first' means what it says only because resolve() dates a signal's first
+    row at earliest_resolvable() rather than at the run date. While it did
+    the latter, this view and 'latest' returned identical rows for every
+    backfilled signal and the docstring above was false.
     """
     if revisions not in ("first", "latest", "all"):
         raise ValueError("revisions must be 'first', 'latest' or 'all'")
@@ -436,6 +510,9 @@ def live_stats(outcomes: list[harness.Outcome],
                baseline_fpr: float | None = None) -> dict:
     """harness.verdict()'s arithmetic on live outcomes, with NO verdict verb.
 
+    Every rate here is None when its denominator is empty, positive_hit_rate
+    included, and positive_hit_rate_undefined says which emptiness it was.
+
     Deliberately re-derived rather than calling verdict(): running the
     pre-registered rule on live data would look like re-scoring a spent
     one-shot test. The agreement between the two computations is enforced by
@@ -452,8 +529,27 @@ def live_stats(outcomes: list[harness.Outcome],
     leads = [o.lead_months for o in pos if o.lead_months is not None]
     assessable = [o for o in pos if not o.censored]
     n_led = sum(1 for o in assessable if o.lead_months and o.lead_months > 0)
-    hit_rate = (n_led / len(assessable)) if assessable else 0.0
+    # None, not 0.0, on an empty denominator -- every sibling rate in this
+    # block already degrades that way. A per-case hit rate of 0.0 printed
+    # beside the frozen per-case 0.287 in the same payload reads as "live
+    # performance has collapsed" when the truth is "nothing has been
+    # measured yet": FINDINGS 6a's score 0.0 beside scoreable=false, one
+    # level up. harness.verdict() keeps its 0.0 and must -- there the number
+    # feeds a pre-registered gate that has to fail closed. This is a
+    # monitoring report with no pass/fail, so a fabricated measurement buys
+    # nothing and costs the reader the difference between zero and unknown.
+    hit_rate = (n_led / len(assessable)) if assessable else None
     hit_ci = reliability.wilson(n_led, len(assessable))
+    if assessable:
+        hit_reason = None
+    elif not pos:
+        hit_reason = ("no filer in this ledger has a resolved deterioration "
+                      "yet, so the denominator is empty -- not zero")
+    else:
+        hit_reason = (
+            f"all {len(pos)} deteriorating filers fired at their first "
+            "RESOLVED cutoff, which makes the lead time uncreditable; the "
+            "denominator is empty -- not zero")
     fpr_ci = reliability.wilson(sum(o.n_fires for o in neg), ctrl_q)
     regimes = {o.regime for o in outcomes
                if o.is_positive and o.regime and o.fired
@@ -461,7 +557,9 @@ def live_stats(outcomes: list[harness.Outcome],
     return {
         "status": "MONITORING",
         "level": "per-case",
-        "positive_hit_rate": round(hit_rate, 3),
+        "positive_hit_rate": (None if hit_rate is None
+                              else round(hit_rate, 3)),
+        "positive_hit_rate_undefined": hit_reason,
         "positive_hit_rate_wilson": ([round(v, 4) for v in hit_ci]
                                      if hit_ci else None),
         "median_lead_months": median(leads) if leads else None,

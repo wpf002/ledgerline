@@ -178,6 +178,97 @@ def test_resolution_is_reproducible_after_a_later_restatement():
     assert before["n_quarters_observed"] == after["n_quarters_observed"]
 
 
+def _restated_after(norm: dict, period: str, filed: str,
+                    factor: float = 0.4) -> dict:
+    """`norm` with a 10-K/A vintage filed at `filed` that cuts one period's
+    revenue. The shape edgar.normalize actually produces, and the shape that
+    separates 'what was knowable when the window closed' from 'what is known
+    today' -- the whole difference this module claims to preserve."""
+    out = copy.deepcopy(norm)
+    row = next(r for r in out["revenue"] if r["end"] == period)
+    row["vintages"].append({**row["vintages"][-1], "filed": filed,
+                            "form": "10-K/A",
+                            "value": row["vintages"][-1]["value"] * factor})
+    return out
+
+
+def test_the_first_resolution_is_dated_when_the_window_closed(isolated_db):
+    """resolve() stamped every row with the RUN date and used
+    earliest_resolvable() only as a skip test, so the first row a backlogged
+    signal ever got carried every filing made since -- up to twenty years of
+    it for the replayed evaluations dated 2005 onward. The row that
+    resolutions(revisions='first') documents as 'the outcome as it was FIRST
+    known' was today's answer, and 'first' and 'latest' were identical for
+    every backfilled signal."""
+    gate = put_signals([("0000000001", "T", "2023-03-01", 10.0)])
+    track.resolve(as_of="2026-08-31", gate_version=gate, horizons=(4,),
+                  normalizer=lambda cik: healthy())
+    rows = track.resolutions(gate, 4, revisions="all")
+    assert [r["resolved_at"] for r in rows] == [
+        track.earliest_resolvable("2023-03-01", 4)]
+
+
+def test_a_restatement_filed_after_the_window_does_not_grade_history(
+        isolated_db):
+    """The consequence, end to end. A 10-K/A filed 19 months after the window
+    closed flips the label; resolved at the run date it flipped the FIRST
+    row, so the hindsight-free view returned DETERIORATED for a quarter that
+    read CLEAN on every day a reader could have looked. One run now writes
+    both rows: the window-close answer, and the restated answer beside it."""
+    gate = put_signals([("0000000001", "T", "2023-03-01", 10.0)])
+    norm = _restated_after(healthy(), "2023-12-31", "2026-01-01")
+    counts = track.resolve(as_of="2026-08-31", gate_version=gate,
+                           horizons=(4,), normalizer=lambda cik: norm)
+    assert (counts["resolved"], counts["revised"]) == (1, 1)
+    first = track.resolutions(gate, 4, revisions="first")
+    latest = track.resolutions(gate, 4, revisions="latest")
+    assert [r["outcome"] for r in first] == ["CLEAN"]
+    assert [r["outcome"] for r in latest] == ["DETERIORATED"]
+    assert first[0]["resolved_at"] == track.earliest_resolvable("2023-03-01", 4)
+    assert latest[0]["resolved_at"] == "2026-08-31"
+    assert first != latest, (
+        "'first' and 'latest' being identical is the defect, not a "
+        "coincidence of the fixture")
+
+
+def test_a_same_day_flip_is_never_reported_as_recorded(isolated_db):
+    """signal_scores is keyed on (signal_id, horizon_q, resolved_at) and
+    written with INSERT OR IGNORE, so a second resolution on the same
+    calendar day collides and is swallowed. counts['revised'] was incremented
+    without ever reading cur.rowcount: the run printed a revision that was
+    never written, and every reader kept the stale label. The append-only
+    rule stands -- the flip is not forced over the day's record -- but the
+    run says it is held over instead of claiming it landed, and the next
+    day's run appends it."""
+    gate = put_signals([("0000000001", "T", "2023-03-01", 10.0)])
+    day = "2026-08-31"
+    track.resolve(as_of=day, gate_version=gate, horizons=(4,),
+                  normalizer=lambda cik: healthy())
+    flip = track.resolve(as_of=day, gate_version=gate, horizons=(4,),
+                         normalizer=lambda cik: sick())
+    assert flip["revised"] == 1
+    stored = [(r["outcome"], r["resolved_at"])
+              for r in track.resolutions(gate, 4, revisions="all")]
+    assert (flip["revised"] == sum(1 for o, d in stored if d == day)), \
+        "a reported revision must correspond to a row that exists"
+
+    # A THIRD distinct outcome on the same day has nowhere to go: the day's
+    # row already exists and is never overwritten.
+    held = track.resolve(as_of=day, gate_version=gate, horizons=(4,),
+                         normalizer=lambda cik: healthy())
+    assert held["revised"] == 0
+    assert held["same_day_conflict"] == 1
+    assert [(r["outcome"], r["resolved_at"])
+            for r in track.resolutions(gate, 4, revisions="all")] == stored
+
+    # Not lost, deferred: the next run's date differs and appends it.
+    later = track.resolve(as_of="2026-09-01", gate_version=gate, horizons=(4,),
+                          normalizer=lambda cik: healthy())
+    assert later["revised"] == 1
+    assert track.resolutions(gate, 4, revisions="latest")[0]["outcome"] \
+        == "CLEAN"
+
+
 def test_a_flipped_label_appends_rather_than_overwrites(isolated_db):
     """A restatement that changes the outcome writes a SECOND signal_scores
     row. revisions='first' still returns the original; 'all' shows both.
@@ -235,6 +326,46 @@ def test_live_and_backtest_are_one_definition():
     assert ls["n_censored_positives"] == v["n_censored_positives"]
     assert ls["n_assessable_positives"] == v["n_assessable_positives"]
     assert ls["control_filer_quarters"] == v["control_filer_quarters"]
+
+
+def test_a_hit_rate_with_no_assessable_case_is_none_not_zero():
+    """`hit_rate = ... if assessable else 0.0` was the one rate in the block
+    that did not degrade to None on an empty denominator. record_payload()
+    prints it under level 'per-case' directly beneath the frozen holdout
+    0.287, also per-case: a published 0.0 there reads as 'live performance
+    has collapsed' when the truth is 'nothing has been measured'. This is
+    FINDINGS 6a -- a score of 0.0 beside scoreable=false -- one level up."""
+    out = harness.Outcome
+    # Five positives the detector fired on, every one censored, so not one is
+    # assessable for lead time. The detector hit 5 of 5; the report said 0.0.
+    censored = [out(f"P{i}", True, True, True, "2020-05-15", None, 0.2, 10,
+                    n_fires=2) for i in range(5)]
+    ls = track.live_stats(censored)
+    assert ls["positive_hit_rate"] is None
+    assert ls["n_positive"] == 5 and ls["n_assessable_positives"] == 0
+    assert "not zero" in ls["positive_hit_rate_undefined"]
+
+    empty = track.live_stats([])
+    assert empty["positive_hit_rate"] is None
+    assert "not zero" in empty["positive_hit_rate_undefined"]
+
+    # And when it IS measurable the number is a number, with no excuse text.
+    real = track.live_stats(_outcome_set())
+    assert real["positive_hit_rate"] is not None
+    assert real["positive_hit_rate_undefined"] is None
+
+
+def test_the_gate_still_fails_closed_where_a_verdict_is_owed():
+    """harness.verdict() keeps its 0.0 and must: there the hit rate feeds a
+    pre-registered pass/fail, and an unmeasurable rate has to fail the gate,
+    not skip it. live_stats has no pass/fail, which is why the same
+    expression is wrong there and right here."""
+    out = harness.Outcome
+    censored = [out("P1", True, True, True, "2020-05-15", None, 0.2, 10,
+                    n_fires=2)]
+    v = harness.verdict(censored, baseline_fpr=0.0051)
+    assert v["checks"]["positive_hit_rate"]["value"] == 0.0
+    assert v["checks"]["positive_hit_rate"]["pass"] is False
 
 
 def test_live_stats_never_returns_a_verdict():

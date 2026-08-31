@@ -495,7 +495,7 @@ CREATE TABLE IF NOT EXISTS cost_samples (
 # Later phases append to MIGRATIONS; renumbering an existing step would make a
 # db migrated under one order silently skip another's step, so steps are
 # append-only too.
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 
 
 def _migration_1(conn: sqlite3.Connection) -> None:
@@ -545,7 +545,46 @@ def _migration_2(conn: sqlite3.Connection) -> None:
         )""")
 
 
-MIGRATIONS: list = [_migration_1, _migration_2]
+def _migration_3(conn: sqlite3.Connection) -> None:
+    """groups / group_members: named labels over the watchlist, many-to-many.
+
+    Two tables and not one, and neither of them a column on `universe`. A
+    comma-joined column on the company row is a list that cannot be counted or
+    corrected without rewriting the row, and a company belongs to as many
+    groups as a person finds useful. The GROUP itself is a row because a group
+    that exists and is empty has to be distinguishable from a name nobody ever
+    created: with one table, `--group semis` typed as `--group semi` returns
+    zero companies and reads as "none of these filed", which is the same class
+    of defect as a score of 0.0 beside "could not assess".
+
+    COLLATE NOCASE on both name columns: a person who types `Semis` today and
+    `semis` tomorrow means one group, and sqlite enforces that at the key
+    rather than the caller remembering to fold case. The stored spelling is
+    whatever was typed first, so the name they chose is the name they see.
+
+    No foreign key to universe and no cascade: memberships are additive
+    labelling over a watchlist that only ever grows, and a delete path from
+    this table into `universe` is exactly what must not exist -- the watchlist
+    and its fetched filing histories are the expensive thing, a group is a
+    label over them.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            name       TEXT PRIMARY KEY COLLATE NOCASE,
+            created_at TEXT
+        )""")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS group_members (
+            name     TEXT NOT NULL COLLATE NOCASE,
+            cik      TEXT NOT NULL,
+            added_at TEXT,
+            PRIMARY KEY (name, cik)
+        )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS group_members_by_cik "
+                 "ON group_members (cik)")
+
+
+MIGRATIONS: list = [_migration_1, _migration_2, _migration_3]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

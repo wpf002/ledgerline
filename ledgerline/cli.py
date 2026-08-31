@@ -8,6 +8,10 @@ is not good enough yet. Every number is published so anyone can check.
 
 Daily use:
     ledgerline watch --add AAPL,MSFT     choose which companies to watch
+    ledgerline watch --import list.csv   add a whole spreadsheet of them
+    ledgerline groups                    your own groupings of watched
+                                         companies; most commands take
+                                         --group NAME
     ledgerline fetch                     download their filing history from the SEC
     ledgerline check                     which of them can be assessed, and why not
     ledgerline scan                      read today's filings, keep the numbers current
@@ -28,8 +32,12 @@ Records:
                                          or refused, and what each one cost
     ledgerline peers                     which companies have industry peers
                                          to compare against (measured, unused)
-    ledgerline publish                   write every saved assessment to one
-                                         file other programs can read
+    ledgerline publish                   write every saved assessment, the
+                                         watchlist and the run log to files
+                                         other programs can read
+    ledgerline export watchlist --out f.csv
+                                         the watchlist, the saved assessments,
+                                         or the run log as a spreadsheet
     ledgerline digest                    one run's results as a short text
                                          report, written to a file
     ledgerline contract-schema           the exact shape of a published entry
@@ -65,17 +73,18 @@ from datetime import date
 
 import typer
 
-from . import backtest, edgar, emit, fullindex, ingest, render, restate, signals_v3
+from . import backtest, csvio, edgar, emit, fullindex, ingest, render, restate, signals_v3
 from . import calibrate as calib
 from . import cost as cost_mod
 from . import coverage as cov
+from . import groups as group_mod
 from . import narrate as narr
 from . import peers as peer_mod
 from . import provenance as prov
 from . import status as phase0
 from . import track as trackrec
 from . import universe as uni
-from .api import contract
+from .api import contract, views
 from .api import digest as run_digest
 from .api import schema as api_schema
 from .validate import harness, retest
@@ -104,15 +113,62 @@ def _no_watchlist_exit() -> None:
     raise typer.Exit(1)
 
 
+def _group_or_exit(name: str) -> dict[str, str]:
+    """The companies in one group as {cik: ticker}, or a refusal that says why.
+
+    Three different situations produce zero companies, and a filtered view that
+    printed nothing for all three would read as "none of your companies
+    qualified" in every one of them. So an unknown name, an empty group and a
+    group whose companies have left the watchlist each get their own sentence
+    and a non-zero exit -- never a silent empty list.
+    """
+    ciks = group_mod.members(name)
+    if ciks is None:
+        typer.echo(f'There is no group called "{name}".')
+        known = group_mod.listing()
+        if known:
+            typer.echo("Groups you have: "
+                       + ", ".join(g["name"] for g in known))
+            typer.echo("  ledgerline groups          (with how many companies "
+                       "are in each)")
+        else:
+            typer.echo("You have no groups yet. Make one:")
+            typer.echo(f"  ledgerline groups --add {name}")
+        raise typer.Exit(1)
+    uni = edgar.universe()
+    out = {c: uni[c]["ticker"] for c in ciks if c in uni}
+    if not out:
+        typer.echo(f'The group "{name}" has no watched companies in it.')
+        typer.echo(f"  ledgerline groups --assign {name} --tickers AAPL,MSFT")
+        raise typer.Exit(1)
+    return out
+
+
 # ------------------------------------------------------------------ daily use
 
 
 @app.command()
 def watch(add: str = typer.Option(None, help="Stock tickers to start watching, "
                                              "e.g. AAPL,MSFT. US SEC filers only."),
+          import_: str = typer.Option(None, "--import", metavar="FILE.csv",
+                                      help="Add every company listed in a "
+                                           "spreadsheet file. The first line "
+                                           "must name the columns; only a "
+                                           "ticker column is required."),
+          group: str = typer.Option(None, help="List only the companies in "
+                                               "this group."),
           tickers: str = typer.Option(None, hidden=True,
                                       help="Old spelling of --add.")):
-    """List the companies being watched, or add more with --add."""
+    """List the companies being watched, or add more with --add or --import.
+
+    --import reads a CSV file: ticker, name, sector, cik, group and status are
+    understood, in any order, and any other column is ignored. Only ticker is
+    required. A company already being watched keeps the details already on
+    file, and every line of the file is reported back -- added, already
+    watched, or not recognised by the SEC. Nothing is downloaded from the SEC
+    beyond the ticker list itself; run `ledgerline fetch` afterwards to pull
+    the filing histories.
+    """
     add = add or tickers
     if add:
         rows = edgar.set_universe([t.strip() for t in add.split(",")])
@@ -121,13 +177,192 @@ def watch(add: str = typer.Option(None, help="Stock tickers to start watching, "
                    "(Any ticker the SEC does not recognise is listed above.)")
         typer.echo("Next: ledgerline fetch")
         return
+    if import_:
+        _watch_import(import_)
+        return
     u = edgar.universe()
     if not u:
         _no_watchlist_exit()
-    typer.echo(f"Watching {len(u)} companies:")
-    tick = sorted(v["ticker"] for v in u.values())
+    if group:
+        picked = _group_or_exit(group)
+        typer.echo(f"{len(picked)} of the {len(u)} watched companies are in "
+                   f'"{group}":')
+        tick = sorted(picked.values())
+    else:
+        typer.echo(f"Watching {len(u)} companies:")
+        tick = sorted(v["ticker"] for v in u.values())
     for i in range(0, len(tick), 12):
         typer.echo("  " + " ".join(f"{t:7}" for t in tick[i:i + 12]))
+
+
+def _watch_import(path: str) -> None:
+    """Read a watchlist CSV and report what happened to every line of it.
+
+    Per row and not per file: a person who exported 500 tickers from somewhere
+    else needs to see which ones the SEC does not recognise, and a single
+    "imported 412" cannot be checked against anything.
+    """
+    if not os.path.exists(path):
+        typer.echo(f"There is no file at {path}. Check the path and try again:")
+        typer.echo("  ledgerline watch --import ./watchlist.csv")
+        raise typer.Exit(1)
+    try:
+        out = csvio.import_watchlist(path)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+
+    for r in out["rows"]:
+        who = r.ticker or "(no ticker)"
+        if r.outcome == "added":
+            typer.echo(f"  line {r.line:4} {who:6} added to the watchlist")
+        elif r.outcome == "already":
+            typer.echo(f"  line {r.line:4} {who:6} already being watched -- "
+                       "left exactly as it was")
+        elif r.outcome == "repeated":
+            typer.echo(f"  line {r.line:4} {who:6} skipped -- {r.detail}")
+        elif r.outcome == "unresolved":
+            typer.echo(f"  line {r.line:4} {who:6} not added -- {r.detail}. "
+                       "This is usually a fund, a foreign listing, or a "
+                       "symbol that has changed.")
+        else:
+            typer.echo(f"  line {r.line:4} {who:6} skipped -- {r.detail}")
+
+    c = out["counts"]
+    typer.echo("")
+    typer.echo(f"{c['added']} added, {c['already']} already being watched, "
+               f"{c['unresolved']} not recognised by the SEC, "
+               f"{c['repeated']} listed twice in the file, "
+               f"{c['malformed']} unreadable.")
+    for name, res in out["groups"].items():
+        n = res["added"]
+        typer.echo(f'Group "{name}": {n} compan{"y" if n == 1 else "ies"} added'
+                   + (f", {res['already']} already in it" if res["already"]
+                      else "") + ".")
+    ig = out["ignored"]
+    if ig["sector"]:
+        n = ig["sector"]
+        typer.echo(f"{n} sector value{'' if n == 1 else 's'} "
+                   f"{'was' if n == 1 else 'were'} read and not stored: this "
+                   "tool takes a company's industry from the SEC's own record. "
+                   "A numeric SEC industry code is kept; a sector name is not.")
+    if ig["status"]:
+        n = ig["status"]
+        typer.echo(f"{n} status value{'' if n == 1 else 's'} "
+                   f"{'was' if n == 1 else 'were'} read and not stored: a "
+                   "company is either watched or it is not.")
+    if c["added"]:
+        typer.echo("Nothing was downloaded from the SEC for these companies "
+                   "yet. Next: ledgerline fetch")
+
+
+@app.command("groups")
+def groups_cmd(add: str = typer.Option(None, help="Start a new group with this "
+                                                  "name, e.g. --add semis."),
+               assign: str = typer.Option(None, help="Put companies into this "
+                                          "group; name them with --tickers. "
+                                          "The group is created if it is new."),
+               unassign: str = typer.Option(None, help="Take companies out of "
+                                            "this group; name them with "
+                                            "--tickers."),
+               tickers: str = typer.Option(None, help="Which companies, "
+                                           "e.g. AAPL,MSFT. Goes with "
+                                           "--assign or --unassign."),
+               delete: str = typer.Option(None, help="Remove a group. The "
+                                          "companies in it stay on your "
+                                          "watchlist; only the grouping "
+                                          "goes away.")):
+    """Your own groupings of watched companies -- list them, or change one.
+
+    A company can be in as many groups as you like ("semis", "the ones I
+    actually own"). Groups are labels over the watchlist and nothing more:
+    `ledgerline watch --group semis`, `check --group semis` and `scan --group
+    semis` all narrow to one group, and deleting a group never removes a
+    company or anything downloaded for it.
+    """
+    if add:
+        made = group_mod.create(add)
+        name = group_mod.clean(add)
+        if made:
+            typer.echo(f'Group "{name}" now exists and is empty. Put '
+                       "companies in it:")
+        else:
+            typer.echo(f'Group "{name}" already exists. Put more companies '
+                       "in it:")
+        typer.echo(f"  ledgerline groups --assign {name} --tickers AAPL,MSFT")
+        return
+
+    if delete:
+        n = group_mod.delete(delete)
+        if n is None:
+            typer.echo(f'There is no group called "{delete}". '
+                       "See what you have: ledgerline groups")
+            raise typer.Exit(1)
+        if n:
+            typer.echo(f'Deleted the group "{group_mod.clean(delete)}". The '
+                       f"{n} compan{'y' if n == 1 else 'ies'} in it "
+                       f"{'is' if n == 1 else 'are'} still on your watchlist, "
+                       "with everything downloaded for "
+                       f"{'it' if n == 1 else 'them'}.")
+        else:
+            typer.echo(f'Deleted the group "{group_mod.clean(delete)}". It was '
+                       "empty, so nothing else changed.")
+        return
+
+    if assign or unassign:
+        name = assign or unassign
+        if not tickers:
+            verb = "put into" if assign else "taken out of"
+            typer.echo(f"Name the companies to be {verb} \"{name}\":")
+            typer.echo(f"  ledgerline groups "
+                       f"--{'assign' if assign else 'unassign'} {name} "
+                       "--tickers AAPL,MSFT")
+            raise typer.Exit(1)
+        wanted = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+        ciks, missing = [], []
+        for t in wanted:
+            cik = _resolve(t)
+            if cik:
+                ciks.append(cik)
+            else:
+                missing.append(t)
+        for t in missing:
+            typer.echo(f"  {t:6} is not on your watchlist, so it cannot be "
+                       f"grouped. Add it first: ledgerline watch --add {t}")
+        if assign:
+            res = group_mod.assign(name, [c for c in ciks if c])
+            typer.echo(f'Group "{group_mod.clean(name)}": {res["added"]} '
+                       f"compan{'y' if res['added'] == 1 else 'ies'} added"
+                       + (f", {res['already']} already in it"
+                          if res["already"] else "") + ".")
+            typer.echo(f"See them: ledgerline watch --group {name}")
+        else:
+            removed = group_mod.unassign(name, [c for c in ciks if c])
+            if removed is None:
+                typer.echo(f'There is no group called "{name}". '
+                           "See what you have: ledgerline groups")
+                raise typer.Exit(1)
+            typer.echo(f'Group "{group_mod.clean(name)}": {removed} '
+                       f"compan{'y' if removed == 1 else 'ies'} taken out. "
+                       "They are still on your watchlist.")
+        if missing:
+            raise typer.Exit(1)
+        return
+
+    rows = group_mod.listing()
+    if not rows:
+        typer.echo("You have no groups yet. A group is your own label over "
+                   "the watchlist. Make one:")
+        typer.echo("  ledgerline groups --add semis")
+        typer.echo("  ledgerline groups --assign semis --tickers NVDA,AMD,INTC")
+        return
+    for g in rows:
+        n = g["n"]
+        typer.echo(f"  {g['name']:20} {n} compan{'y' if n == 1 else 'ies'}"
+                   + ("   (empty -- nothing has been put in it yet)"
+                      if not n else ""))
+    typer.echo(f"\n{len(rows)} group{'s' if len(rows) != 1 else ''}. "
+               "See one: ledgerline watch --group NAME")
 
 
 @app.command()
@@ -184,6 +419,8 @@ def check(as_of: str = typer.Option(None, help="Check as of this date "
           limit: int = typer.Option(None, help="Stop after this many "
                                     "companies -- a quick look while the full "
                                     "list would be slow."),
+          group: str = typer.Option(None, help="Check only the companies in "
+                                               "this group."),
           persist: bool = typer.Option(True, "--persist/--no-persist",
                                        help="Record the results in the local "
                                             "database and write a report file "
@@ -221,7 +458,11 @@ def check(as_of: str = typer.Option(None, help="Check as of this date "
     # can and cannot assess, which reads as the tool working.
     typer.echo(phase0.banner())
     typer.echo("")
-    dash = cov.build(as_of=as_of, limit=limit)
+    picked = _group_or_exit(group) if group else None
+    if picked:
+        typer.echo(f'Checking the {len(picked)} companies in "{group}".')
+        typer.echo("")
+    dash = cov.build(as_of=as_of, tickers=picked, limit=limit)
     for fc in dash.filers:
         typer.echo(render.check_line(
             fc.ticker, fc.scoreable,
@@ -310,6 +551,10 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                                            "each company that filed, so today's "
                                            "filing is actually in the data. On "
                                            "by default."),
+         group: str = typer.Option(None, help="Only pay attention to the "
+                                              "companies in this group. The "
+                                              "one filing-list request is the "
+                                              "same either way."),
          narrate: bool = typer.Option(False, "--narrate",
                                       help="Also write a short machine-drafted "
                                            "summary for each company that gets "
@@ -331,13 +576,20 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                    "is opt-in. Run both together:")
         typer.echo("  ledgerline scan --score --narrate")
         raise typer.Exit(1)
+    picked = _group_or_exit(group) if group else None
     if score:
         # The verdict prints BEFORE the first result line. A feed that leads
         # with flags and buries the failed test is an alert with a disclaimer.
         typer.echo(phase0.banner())
         typer.echo("")
+    if picked:
+        typer.echo(f'Watching for filings from the {len(picked)} companies in '
+                   f'"{group}". The SEC filing list is read once either way -- '
+                   "narrowing to a group saves per-company work, not the "
+                   "request that starts the run.")
     out = ingest.scan(days_back=days_back, as_of=as_of, score=score,
-                      refresh=refresh)
+                      refresh=refresh,
+                      ciks=set(picked) if picked else None)
     if not out["filers"]:
         if out["index_rows"] == 0 and date.today().weekday() >= 5:
             typer.echo("The SEC publishes no filing list at weekends or on "
@@ -829,7 +1081,12 @@ def publish(since_seq: int = typer.Option(0, help="Continue an earlier export: "
                                                   "previous publish). 0 rewrites "
                                                   "the whole file."),
             out: str = typer.Option(None, help="File to write; defaults to "
-                                               "reports/feed/signals.jsonl.")):
+                                               "reports/feed/signals.jsonl."),
+            pages: bool = typer.Option(True, "--pages/--no-pages",
+                                       help="Also write the files the local "
+                                            "viewer reads: the watchlist, the "
+                                            "run log, and one file per "
+                                            "company. On by default.")):
     """Write every saved assessment to one file, one JSON entry per line.
 
     This is how other programs read Ledgerline: the local viewer in service/
@@ -837,14 +1094,61 @@ def publish(since_seq: int = typer.Option(0, help="Continue an earlier export: "
     carries the record of the failed 2026-08-30 test inside it -- a program
     cannot receive a score from this file without also receiving that fact.
     Companies that could not be assessed are lines too, with the reason.
-    Nothing is uploaded or sent anywhere; this writes a local file.
+    Nothing is uploaded or sent anywhere; this writes local files.
+
+    Beside the feed it writes watchlist.json (who is watched, who can be
+    assessed and why not, what the last saved assessment said), runs.json (the
+    job log) and companies/TICKER.json (one company in full: the saved
+    assessment, the filings its numbers came from, the figures it later
+    revised, and the same plain-language reading `ledgerline explain` prints).
+    Every one of those carries the failed-test record too. Nothing is
+    re-assessed here -- publishing reads what has already been saved.
     """
     path = out or contract.FEED_PATH
     n, max_seq = contract.export_jsonl(path, since_seq=since_seq)
     typer.echo(f"Wrote {n} entr{'y' if n == 1 else 'ies'} to {path} "
                f"(now at position {max_seq}).")
+    if pages:
+        res = views.write_all(os.path.dirname(os.path.abspath(path)))
+        typer.echo(f"Also wrote watchlist.json ({res['watched']} companies), "
+                   f"runs.json ({res['runs']} runs) and {res['companies']} "
+                   f"company files under {os.path.join(res['dir'], 'companies')}.")
     typer.echo(f"To export only what comes next, later: "
                f"ledgerline publish --since-seq {max_seq}")
+
+
+@app.command("export")
+def export_cmd(what: str = typer.Argument(..., metavar="WHAT",
+                                          help="watchlist, signals or runs."),
+               out: str = typer.Option(..., "--out", metavar="FILE.csv",
+                                       help="The spreadsheet file to write.")):
+    """Write the watchlist, every saved assessment, or the job log to a CSV file.
+
+    watchlist  every watched company: name, industry code, its groups, whether
+               it can be assessed and why not, and how many of the thirteen
+               measures it gets. Read from what `ledgerline check` last
+               recorded -- this command assesses nothing.
+    signals    one line per saved assessment, including the companies that
+               could not be assessed and the reason. Without those there is no
+               denominator.
+    runs       the log of every scan and fetch: when, what it cost, what it
+               found.
+
+    The first line of every file written is a comment carrying the result of
+    the failed 2026-08-30 test, so a spreadsheet that leaves this machine
+    still says the detector missed its own bar. Nothing is sent anywhere.
+    """
+    try:
+        n = csvio.export(what, out)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    typer.echo(f"Wrote {n} row{'s' if n != 1 else ''} to {out}. The first line "
+               "is a comment carrying the failed-test result; every "
+               "spreadsheet program skips it or shows it as a row.")
+    if what == "watchlist":
+        typer.echo("Companies never checked say so rather than claiming to be "
+                   "assessable: ledgerline check fills that in.")
 
 
 @app.command()

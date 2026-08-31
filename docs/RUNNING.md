@@ -28,6 +28,40 @@ The first `fetch` over a large watchlist takes a while (the SEC allows ~9
 requests/second). Accepted filings never change, so everything is cached
 permanently and reruns are fast.
 
+## Groups, and lists that arrive as spreadsheets
+
+```bash
+ledgerline watch --import my-list.csv   # add a whole spreadsheet of companies
+ledgerline groups                       # your own groupings, with counts
+ledgerline groups --assign semis --tickers NVDA,AMD,INTC
+ledgerline watch --group semis          # and check --group / scan --group
+```
+
+The import file needs a first line naming its columns; only `ticker` is
+required, and `name`, `sector`, `cik`, `group` and `status` are understood in
+any order. Every line is reported back — added, already watched, or not
+recognised by the SEC — and one bad line does not stop the rest. Nothing is
+downloaded for the new companies; run `ledgerline fetch` next.
+
+A group is a label over the watchlist. A company can be in as many as you
+like, and deleting a group never removes a company or anything downloaded for
+it. Filtering by a group you have not created, or one nobody is in yet, says
+so rather than showing an empty list.
+
+## Taking the data elsewhere
+
+```bash
+ledgerline export watchlist --out watchlist.csv   # or signals, or runs
+ledgerline publish                                # the files the local viewer reads
+```
+
+Every exported file leads with a comment line carrying the result of the
+failed 2026-08-30 test, so a spreadsheet that leaves this machine still says
+the detector missed its own bar. `publish` writes the assessment feed plus
+`watchlist.json`, `runs.json` and one file per company under `reports/feed/`;
+each of those carries the same record. Publishing reads what has already been
+saved and assesses nothing.
+
 ## What the output means
 
 - **FLAGGED** — at least two measures broke from this company's own historical

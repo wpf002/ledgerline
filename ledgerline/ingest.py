@@ -190,16 +190,25 @@ def ingest_filer(cik: str, run_id: int, counters: RunCounters, *,
 
 
 def scan(days_back: int = 1, as_of: str | None = None, score: bool = False,
-         refresh: bool = True) -> dict:
+         refresh: bool = True, ciks: set[str] | None = None) -> dict:
     """The scheduled job body: detect, ingest the filers that filed, book it.
 
     score=False by default -- justified by the Phase 0 numbers in the module
     docstring, not by preference. With score=True every payload comes back
     stamped with the frozen verdict (signals_v3.evaluate stamps its own
     output), and the CLI prints the banner before the first result line.
+
+    `ciks` narrows which watched companies are considered -- one named group,
+    say. It does NOT narrow the daily-index request, which is a single
+    market-wide read whatever the filter says: the Tier 0 cost is flat in
+    universe size, and a per-group scan is cheaper only in the per-filer work
+    that follows, never in the one request that starts it. index_rows in the
+    run row stays the market-wide count for exactly that reason.
     """
     with run("scan", as_of) as (run_id, c):
         uni = edgar.universe()
+        if ciks is not None:
+            uni = {k: v for k, v in uni.items() if k in ciks}
         known = edgar.known_accessions() if uni else set()
         today = date.today()
         anchor = date.fromisoformat(as_of) if as_of else today

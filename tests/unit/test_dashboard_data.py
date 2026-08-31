@@ -27,6 +27,7 @@ redirected to tmp_path, so the live state.db is never touched. No network.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
 
@@ -244,7 +245,8 @@ def test_every_export_leads_with_the_failed_test(isolated_db, tmp_path, what):
     csvio.export(what, out)
     with open(out) as fh:
         first = fh.readline()
-    assert first.startswith("# ")
+    # The line is one quoted cell, so it opens with the quote character.
+    assert first.lstrip('"').startswith("# ")
     assert "failed its own pre-registered test" in first
     assert "28.7%" in first and "60%" in first
 
@@ -272,7 +274,8 @@ def test_exported_watchlist_never_calls_an_unchecked_company_assessable(
     out = str(tmp_path / "w.csv")
     csvio.export("watchlist", out)
     with open(out) as fh:
-        lines = [ln for ln in fh.read().splitlines() if not ln.startswith("#")]
+        lines = [ln for ln in fh.read().splitlines()
+                 if not ln.lstrip('"').startswith("#")]
     assert "not checked yet" in lines[1]
     assert "ledgerline check" in lines[1]
 
@@ -586,3 +589,78 @@ def test_the_watchlist_counts_checked_apart_from_assessable(isolated_db, tmp_pat
     conn.close()
     assert checked["n_assessable"] == 0
     assert checked["n_checked"] == 1, "check has run; the header must not deny it"
+
+
+def test_an_import_cannot_hand_a_watched_symbol_to_another_company(
+        isolated_db, tmp_path):
+    """`universe` keys on cik and constrains nothing on ticker, so a row
+    carrying its own cik column used to append a SECOND row under a watched
+    symbol: import reported a clean "added", and cli._resolve -- which takes
+    whichever row the SELECT returns last -- pointed explain, score,
+    provenance and narrate at the newcomer under the label the person still
+    read as theirs. The row is refused and names both companies."""
+    watch([("0000320193", "AAPL", "Apple Inc.", "3571")])
+    path = write_csv(tmp_path / "w.csv",
+                     "ticker,cik,name\nAAPL,9999999,Acme Holdings\n")
+    out = csvio.import_watchlist(path, tmap={})
+
+    (row,) = out["rows"]
+    assert row.outcome == "conflict"
+    assert "0000320193" in row.detail and "0009999999" in row.detail
+    assert out["counts"]["added"] == 0 and out["counts"]["conflict"] == 1
+
+    conn = edgar.db()
+    holders = conn.execute(
+        "SELECT cik FROM universe WHERE ticker = 'AAPL'").fetchall()
+    conn.close()
+    assert holders == [("0000320193",)]
+    assert cli._resolve("AAPL") == "0000320193"
+
+
+def test_one_file_cannot_list_two_companies_under_one_symbol(
+        isolated_db, tmp_path):
+    """The same collision inside a single file, where neither company is
+    watched yet: the first line takes the symbol, the second is refused. The
+    `repeated` check keys on cik and never saw this one."""
+    path = write_csv(tmp_path / "w.csv",
+                     "ticker,cik,name\n"
+                     "AAA,0000000001,First Inc\n"
+                     "AAA,0000000002,Second Inc\n")
+    out = csvio.import_watchlist(path, tmap={})
+    assert [r.outcome for r in out["rows"]] == ["added", "conflict"]
+    assert sorted(edgar.universe()) == ["0000000001"]
+
+
+def test_a_company_is_labelled_with_the_spelling_the_group_was_created_under(
+        isolated_db):
+    """Both name columns are COLLATE NOCASE, so `semis` and `SEMIS` are one
+    group -- but memberships() read the name off the membership row, which
+    kept the spelling typed at assign time. The listing said "Semis" while the
+    export and the published watchlist said "semis" for one company and
+    "SEMIS" for the other: one group under three names on one page."""
+    watch([("0000000001", "AAA", "A Inc", "3674"),
+           ("0000000002", "BBB", "B Inc", "3674")])
+    groups.create("Semis")
+    groups.assign("semis", ["0000000001"])
+    groups.assign("SEMIS", ["0000000002"])
+
+    assert [g["name"] for g in groups.listing()] == ["Semis"]
+    assert groups.memberships() == {"0000000001": ["Semis"],
+                                    "0000000002": ["Semis"]}
+    assert [r["groups"] for r in csvio.watchlist_rows()] == [["Semis"],
+                                                             ["Semis"]]
+
+
+def test_the_verdict_line_is_one_cell_and_not_four(isolated_db, tmp_path):
+    """The statement carries four commas. Written with fh.write() it parsed as
+    four cells, and a spreadsheet drew it as four columns clipped to the width
+    of `run_id` with the measured numbers hidden behind them. Through the csv
+    writer it is one quoted cell that can overflow across the empty ones."""
+    watch([("0000000001", "TEST", "T Inc", "3674")])
+    out = str(tmp_path / "w.csv")
+    csvio.export("watchlist", out)
+    with open(out, newline="") as fh:
+        first = next(csv.reader(fh))
+    assert len(first) == 1
+    assert first[0].startswith("# ")
+    assert "28.7%" in first[0] and "3.83%" in first[0]

@@ -154,8 +154,11 @@ def ingest_filer(cik: str, run_id: int, counters: RunCounters, *,
     Catches RuntimeError and JSONDecodeError as well as HTTPError, records the
     error in ingest_state, and lets the caller continue -- scripts/backfill.py
     did this for years without a test; the behaviour now lives here and has
-    one. The vintage diff runs BEFORE persist_vintages, or every revision
-    would look already-known (pinned by a test in test_restatement.py).
+    one. The vintage diff runs BEFORE the vintages are written, or every
+    revision would look already-known (pinned by a test in
+    test_restatement.py), and diff/record/write share ONE transaction --
+    restate.ingest_revisions -- because a crash between the vintage write and
+    the event write used to destroy that filer's revision history for good.
     """
     try:
         doc = edgar.companyfacts(cik, refresh=refresh)
@@ -174,10 +177,10 @@ def ingest_filer(cik: str, run_id: int, counters: RunCounters, *,
         return {"cik": cik, "status": "no_facts", "rows": 0}
 
     conn = edgar.db()
-    events = restate.diff(conn, cik, norm)
-    restate.persist_vintages(conn, cik, norm)
-    restate.record(conn, events, run_id)
-    conn.close()
+    try:
+        events = restate.ingest_revisions(conn, cik, norm, run_id)
+    finally:
+        conn.close()
     rows = edgar.persist_metrics(cik, norm)
     cov = edgar.coverage_report(norm)
     low = sorted(m for m, c in cov.items() if c["n"] and not c["scoreable"])

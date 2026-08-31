@@ -9,7 +9,10 @@ of them inside a command a person thinks reads a file is how a "quick import"
 becomes an hour of unexplained network traffic. It never overwrites a company
 already being watched either: the row on disk carries a name and an industry
 code that were fetched from the SEC, and a spreadsheet is not a better source
-for those than the SEC is.
+for those than the SEC is. Nor does it rebind a symbol: a line that hands a
+watched ticker to a different CIK is reported as a conflict and skipped, or
+every command a person addresses by that symbol would answer about the other
+company.
 
 Why every row gets its own outcome line: a bulk operation that prints one
 number ("imported 412") cannot be checked. A person who exported 500 tickers
@@ -63,7 +66,8 @@ class Row:
     ticker: str | None
     cik: str | None
     group: str | None
-    outcome: str      # added | already | unresolved | repeated | malformed
+    outcome: str      # added | already | unresolved | repeated | conflict
+                      # | malformed
     detail: str | None
 
     def as_dict(self) -> dict:
@@ -93,7 +97,8 @@ def import_watchlist(path: str, tmap: dict[str, dict] | None = None,
     Returns {"rows": [Row, ...], "counts": {...}, "groups": {name: n},
     "ignored": {...}}. A row is `added` (new to the watchlist), `already`
     (watched before this file was read), `unresolved` (the SEC's ticker map
-    has no CIK for it), `repeated` (a ticker the same file already listed) or
+    has no CIK for it), `repeated` (a ticker the same file already listed),
+    `conflict` (its symbol already belongs to a different company) or
     `malformed` (unreadable, reported with its line number and skipped).
 
     `tmap` is the SEC ticker map; it is loaded only if some row needs it, so a
@@ -124,6 +129,13 @@ def import_watchlist(path: str, tmap: dict[str, dict] | None = None,
     conn = conn or edgar.db()
     try:
         watched = {r[0] for r in conn.execute("SELECT cik FROM universe")}
+        # symbol -> the company that already answers to it. `universe` has a
+        # primary key on cik and nothing at all on ticker, so a file carrying
+        # its own cik column could append a second row under a watched symbol;
+        # cli._resolve then took whichever row the SELECT happened to return
+        # last, and every ticker-addressed command read the other company.
+        held = {(r[1] or "").upper(): r[0]
+                for r in conn.execute("SELECT cik, ticker FROM universe")}
         rows: list[Row] = []
         seen: set[str] = set()
         pending: list[tuple[str, str, str | None, str | None]] = []
@@ -166,6 +178,21 @@ def import_watchlist(path: str, tmap: dict[str, dict] | None = None,
                                 "this company is listed earlier in the same "
                                 "file"))
                 continue
+
+            # A symbol is an address a person types, so it may name exactly
+            # one company. Rebinding it here would point explain, score,
+            # provenance and narrate at a different filer under the label the
+            # person still reads as theirs -- silently, in every surface.
+            holder = held.get(ticker)
+            if holder is not None and holder != cik:
+                rows.append(Row(
+                    line, ticker, cik, group, "conflict",
+                    f"the symbol {ticker} already belongs to CIK {holder} "
+                    f"here, and this line gives it to CIK {cik}. Nothing was "
+                    "changed. Remove one of the two, or drop this line's cik "
+                    "column and let the SEC's ticker list decide"))
+                continue
+            held[ticker] = cik
             seen.add(cik)
 
             name = _cell(raw_row, idx, "name") or None
@@ -202,7 +229,8 @@ def import_watchlist(path: str, tmap: dict[str, dict] | None = None,
             conn.close()
 
     counts = {k: sum(1 for r in rows if r.outcome == k)
-              for k in ("added", "already", "unresolved", "repeated", "malformed")}
+              for k in ("added", "already", "unresolved", "repeated",
+                        "conflict", "malformed")}
     return {"rows": rows, "counts": counts, "groups": assigned,
             "ignored": ignored}
 
@@ -228,12 +256,20 @@ def sheet(path: str) -> Iterator[Any]:
     export_jsonl uses: on a machine holding no evidence of the 2026-08-30 test
     this raises and no file exists at all. A zero-byte spreadsheet, or one
     holding rows and no verdict line, is worse than no spreadsheet.
+
+    It goes through the csv writer and not fh.write(): the statement contains
+    four commas, so written raw it parsed as four cells and a spreadsheet drew
+    it as four clipped columns with the measured numbers hidden behind them.
+    Quoted, it is one cell in A1 that overflows across the empty cells beside
+    it -- the whole sentence, legible, on the artifact most likely to be
+    forwarded.
     """
     comment = validation_comment()
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", newline="") as fh:
-        fh.write(comment + "\n")
-        yield csv.writer(fh)
+        w = csv.writer(fh)
+        w.writerow([comment])
+        yield w
 
 
 def _plain_flags(flags: list[dict] | None) -> str:

@@ -11,7 +11,11 @@ $9.457B filed 2012-05-08, restated to $5.284B in the 2013-05-08 10-Q.
 """
 from __future__ import annotations
 
-from ledgerline import derive, edgar, provenance, restate, signals_v3, status
+import sqlite3
+
+import pytest
+
+from ledgerline import derive, edgar, ingest, provenance, restate, signals_v3, status
 from tests.unit.test_gate import build_filer
 from tests.unit.test_ingestion import ytd_facts
 
@@ -306,3 +310,72 @@ def test_high_derived_fraction_is_labeled_not_suppressed(monkeypatch):
     assert res["scoreable"] is True
     assert res["provenance"]["derived_fraction_high"] is True
     assert res["provenance"]["derived_fraction_observed"]["max"] == 0.457
+
+
+# ------------------------------------------------- the two writes are one
+
+
+def _revised_facts() -> dict:
+    """One period filed twice: $9.457B in 2012, restated to $5.284B in 2013 --
+    the ABT revision above, in the raw shape companyfacts serves."""
+    def fact(val: float, filed: str, accn: str) -> dict:
+        return {"start": "2012-01-01", "end": "2012-03-31", "val": val,
+                "form": "10-Q", "filed": filed, "fy": 2012, "fp": "Q1",
+                "accn": accn}
+
+    return {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [
+        fact(9_456_633_000.0, "2012-05-08", "orig"),
+        fact(5_283_685_000.0, "2013-05-08", "rs1"),
+    ]}}}}}
+
+
+def _break_the_event_write(on: bool) -> None:
+    """Make the write to `restatements` fail, the way a Ctrl-C or any raised
+    exception between the two writes did. A trigger and not a monkeypatch,
+    because ingest_filer opens its own connection."""
+    conn = edgar.db()
+    with conn:
+        if on:
+            conn.execute(
+                "CREATE TRIGGER events_fail BEFORE INSERT ON restatements "
+                "BEGIN SELECT RAISE(ABORT, 'interrupted'); END")
+        else:
+            conn.execute("DROP TRIGGER IF EXISTS events_fail")
+    conn.close()
+
+
+def test_an_interrupted_ingest_does_not_destroy_the_revision_history(
+        tmp_path, monkeypatch):
+    """The defect: ingest_filer ran diff, persist_vintages and record as three
+    separate autocommitted transactions. persist_vintages is what makes a
+    revision already-known -- diff keys on the stored `filed` dates -- so a
+    crash after it and before record left the baseline advanced and the events
+    gone, permanently and silently: the rerun re-downloads, re-normalizes and
+    finds nothing new. Measured on the live cache, CIK 0000001750 lost all 125
+    of its events that way. One transaction, so the rerun still sees them."""
+    monkeypatch.setattr(edgar, "DATA", str(tmp_path))
+    monkeypatch.setattr(edgar, "DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setattr(edgar, "universe",
+                        lambda: {CIK: {"cik": CIK, "ticker": "T", "name": "T"}})
+    monkeypatch.setattr(edgar, "companyfacts",
+                        lambda cik, refresh=False: _revised_facts())
+
+    _break_the_event_write(True)
+    with pytest.raises(sqlite3.IntegrityError, match="interrupted"):
+        ingest.ingest_filer(CIK, run_id=1, counters=ingest.RunCounters())
+
+    conn = edgar.db()
+    counts = (conn.execute("SELECT COUNT(*) FROM vintages").fetchone()[0],
+              conn.execute("SELECT COUNT(*) FROM restatements").fetchone()[0])
+    conn.close()
+    assert counts == (0, 0), "the baseline moved without its events"
+
+    _break_the_event_write(False)
+    out = ingest.ingest_filer(CIK, run_id=2, counters=ingest.RunCounters())
+    assert out["restatements"] == 1
+
+    conn = edgar.db()
+    stored = conn.execute(
+        "SELECT prior_value, value FROM restatements").fetchall()
+    conn.close()
+    assert stored == [(9_456_633_000.0, 5_283_685_000.0)]

@@ -114,6 +114,13 @@ def assign(name: str, ciks: Iterable[str],
     with _db(conn) as c, c:
         c.execute("INSERT OR IGNORE INTO groups (name, created_at) VALUES (?, ?)",
                   (name, today))
+        # Store the canonical spelling, not the one typed at assign time. The
+        # keys are COLLATE NOCASE, so `SEMIS` and `semis` are one group -- but
+        # the membership row keeps whatever string it was given, and that
+        # string is the per-company label the export and the web page print.
+        row = c.execute("SELECT name FROM groups WHERE name = ?",
+                        (name,)).fetchone()
+        name = row[0] if row else name
         for cik in ciks:
             cur = c.execute(
                 "INSERT OR IGNORE INTO group_members (name, cik, added_at) "
@@ -182,11 +189,21 @@ def memberships(conn: sqlite3.Connection | None = None) -> dict[str, list[str]]:
     One query for the whole watchlist: the export and the published watchlist
     both need this for ~1,500 companies, and 1,500 single-company lookups is
     the shape of query that turns a fast publish into a slow one.
+
+    Names come from `groups`, not from the membership row: the two name
+    columns are COLLATE NOCASE, so a group assigned once as `semis` and once
+    as `SEMIS` is one group with one stored spelling, while the membership
+    rows kept whichever spelling was typed. This function is what the CSV
+    export and the published watchlist print per company, so the group listing
+    said "Semis" while the table beside it said "semis" and "SEMIS" for two
+    companies in that same group. LEFT JOIN and COALESCE, so a membership row
+    with no group row is still returned rather than silently dropped.
     """
     out: dict[str, list[str]] = {}
     with _db(conn) as c:
         for cik, name in c.execute(
-                "SELECT cik, name FROM group_members "
-                "ORDER BY cik, name COLLATE NOCASE").fetchall():
+                "SELECT m.cik, COALESCE(g.name, m.name) FROM group_members m "
+                "LEFT JOIN groups g ON g.name = m.name "
+                "ORDER BY m.cik, 2 COLLATE NOCASE").fetchall():
             out.setdefault(cik, []).append(name)
     return out

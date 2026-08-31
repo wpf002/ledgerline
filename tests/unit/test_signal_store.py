@@ -160,6 +160,44 @@ def test_signals_table_is_append_only(isolated_db):
     assert len(rows()) == 1
 
 
+def test_a_published_signal_cannot_be_rewritten_by_insert_or_replace(
+        isolated_db):
+    """The schema comment claimed OR REPLACE "would fire the delete trigger
+    and abort". It did not: SQLite fires DELETE triggers for a REPLACE
+    conflict only with PRAGMA recursive_triggers ON, which is OFF by default,
+    so a published score, its accessions and its gate version could be
+    rewritten in place with both triggers installed. Worse, REPLACE also
+    conflicts on the unique index over seq, so it could delete a published
+    signal the statement never named. db() turns the pragma on; OR IGNORE
+    still ignores, because it deletes nothing."""
+    emit.emit(quiet_verdict(), source="score")
+    emit.emit(fired_verdict(), source="score")
+    before = rows()
+    assert len(before) == 2
+
+    conn = edgar.db()
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(signals)")]
+    first = list(conn.execute("SELECT * FROM signals ORDER BY seq").fetchone())
+    forged = list(first)
+    forged[cols.index("score")] = 99.0
+    forged[cols.index("gate_version")] = "FORGED-v9"
+    marks = ",".join("?" * len(cols))
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(f"INSERT OR REPLACE INTO signals VALUES ({marks})", forged)
+
+    # The same statement aimed at a seq that belongs to the OTHER signal:
+    # a replace here would delete a row it does not name.
+    stolen = list(first)
+    stolen[cols.index("signal_id")] = "forged-id"
+    stolen[cols.index("seq")] = 2
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(f"INSERT OR REPLACE INTO signals VALUES ({marks})", stolen)
+    assert conn.execute("PRAGMA recursive_triggers").fetchone()[0] == 1
+    conn.close()
+
+    assert rows() == before
+
+
 # ---------------------------------------------------------------- payloads
 
 

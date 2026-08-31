@@ -452,6 +452,43 @@ def test_migration_is_idempotent_and_leaves_metrics_untouched(
     conn.close()
 
 
+def test_a_migration_that_fails_partway_leaves_no_trace_of_itself(
+        tmp_path, monkeypatch):
+    """The defect: _migrate wrapped each step in `with conn:`, and Python's
+    sqlite3 opens a transaction only for DML -- so a step's DDL autocommitted
+    one statement at a time and the user_version bump committed separately
+    from the work it recorded. A step interrupted partway left the schema
+    ahead of its marker: the column existed, nothing said the step had run,
+    and the next open re-ran it against a database it had already changed
+    (OperationalError: duplicate column name). Today's three steps are
+    self-guarding; MIGRATIONS is append-only and the next one may not be.
+    Inside an explicit transaction, SQLite rolls DDL and user_version back
+    together."""
+    _isolated_db(tmp_path, monkeypatch)
+    edgar.db().close()
+
+    def half_applied(conn):
+        conn.execute("ALTER TABLE universe ADD COLUMN exchange TEXT")
+        conn.execute("UPDATE universe SET exchange = 'XNAS'")
+        raise RuntimeError("interrupted mid-step")
+
+    monkeypatch.setattr(edgar, "MIGRATIONS", [*edgar.MIGRATIONS, half_applied])
+    with pytest.raises(RuntimeError, match="interrupted"):
+        edgar.db()
+
+    raw = sqlite3.connect(str(tmp_path / "state.db"))
+    cols = {r[1] for r in raw.execute("PRAGMA table_info(universe)")}
+    version = raw.execute("PRAGMA user_version").fetchone()[0]
+    raw.close()
+    assert "exchange" not in cols, "the schema outran its version marker"
+    assert version == edgar.SCHEMA_VERSION
+
+    # And the database is still openable: the step is outstanding, not
+    # half-done, so re-running it is the ordinary path rather than a crash.
+    monkeypatch.setattr(edgar, "MIGRATIONS", list(edgar.MIGRATIONS)[:-1])
+    edgar.db().close()
+
+
 def test_set_universe_rerun_does_not_null_the_sic_column(
         tmp_path, monkeypatch):
     """INSERT OR REPLACE deleted the whole row, so every universe re-run

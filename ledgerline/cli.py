@@ -219,7 +219,7 @@ def _watch_import(path: str) -> None:
         elif r.outcome == "already":
             typer.echo(f"  line {r.line:4} {who:6} already being watched -- "
                        "left exactly as it was")
-        elif r.outcome == "repeated":
+        elif r.outcome in ("repeated", "conflict"):
             typer.echo(f"  line {r.line:4} {who:6} skipped -- {r.detail}")
         elif r.outcome == "unresolved":
             typer.echo(f"  line {r.line:4} {who:6} not added -- {r.detail}. "
@@ -233,6 +233,7 @@ def _watch_import(path: str) -> None:
     typer.echo(f"{c['added']} added, {c['already']} already being watched, "
                f"{c['unresolved']} not recognised by the SEC, "
                f"{c['repeated']} listed twice in the file, "
+               f"{c['conflict']} clashing with a symbol already in use, "
                f"{c['malformed']} unreadable.")
     for name, res in out["groups"].items():
         n = res["added"]
@@ -1172,8 +1173,9 @@ def export_cmd(what: str = typer.Argument(..., metavar="WHAT",
         typer.echo(str(exc))
         raise typer.Exit(1) from exc
     typer.echo(f"Wrote {n} row{'s' if n != 1 else ''} to {out}. The first line "
-               "is a comment carrying the failed-test result; every "
-               "spreadsheet program skips it or shows it as a row.")
+               "is a comment carrying the failed-test result, written as one "
+               "quoted cell, so a spreadsheet shows the whole sentence in the "
+               "first row rather than in pieces.")
     if what == "watchlist":
         typer.echo("Companies never checked say so rather than claiming to be "
                    "assessable: ledgerline check fills that in.")

@@ -36,6 +36,10 @@ Events are EMITTED, never applied: the superseded vintage row stays in
 `vintages` at its original value and filed date. diff() must run against the
 STORED vintages before persist_vintages() writes the new ones -- reversing the
 order makes every revision look already-known. A test pins the ordering.
+
+The two writes are also one transaction (ingest_revisions): the vintage write
+is what makes a revision already-known, so a crash between it and the event
+write loses the events with nothing left to rediscover them from.
 """
 from __future__ import annotations
 
@@ -175,9 +179,9 @@ def diff(conn: sqlite3.Connection, cik: str, norm: dict) -> list[Restatement]:
     return events
 
 
-def persist_vintages(conn: sqlite3.Connection, cik: str, norm: dict) -> int:
-    """Write every vintage of every row. One executemany per filer -- the
-    backfill over ~1,500 filers must not hold one giant transaction open."""
+def _write_vintages(conn: sqlite3.Connection, cik: str, norm: dict) -> int:
+    """The vintage write with no transaction of its own, so a caller can put
+    it in the same transaction as the events it belongs with."""
     payload = [
         (
             cik, metric, r["end"], r.get("kind") or "", v.get("filed") or "",
@@ -188,14 +192,41 @@ def persist_vintages(conn: sqlite3.Connection, cik: str, norm: dict) -> int:
         for r in rows
         for v in (r.get("vintages") or [r])
     ]
-    with conn:
-        conn.executemany(
-            "INSERT OR REPLACE INTO vintages "
-            "(cik, metric, end_date, kind, filed, value, form, concept, origin, "
-            " sources) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            payload,
-        )
+    conn.executemany(
+        "INSERT OR REPLACE INTO vintages "
+        "(cik, metric, end_date, kind, filed, value, form, concept, origin, "
+        " sources) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        payload,
+    )
     return len(payload)
+
+
+def persist_vintages(conn: sqlite3.Connection, cik: str, norm: dict) -> int:
+    """Write every vintage of every row. One executemany per filer -- the
+    backfill over ~1,500 filers must not hold one giant transaction open."""
+    with conn:
+        return _write_vintages(conn, cik, norm)
+
+
+def _write_events(conn: sqlite3.Connection, events: list[Restatement],
+                  run_id: int | None = None) -> int:
+    """The event write with no transaction of its own -- see _write_vintages."""
+    if not events:
+        return 0
+    now = datetime.now(UTC).isoformat()
+    conn.executemany(
+        "INSERT OR IGNORE INTO restatements "
+        "(cik, metric, end_date, kind, filed, prior_filed, prior_value, value, "
+        " rel_change, form, on_amendment, material, detected_run, detected_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (e.cik, e.metric, e.end_date, e.kind, e.filed, e.prior_filed,
+             e.prior_value, e.value, e.rel_change, e.form,
+             int(e.on_amendment), int(e.material), run_id, now)
+            for e in events
+        ],
+    )
+    return len(events)
 
 
 def record(conn: sqlite3.Connection, events: list[Restatement],
@@ -205,21 +236,33 @@ def record(conn: sqlite3.Connection, events: list[Restatement],
     restatement daily would be a broken feed."""
     if not events:
         return 0
-    now = datetime.now(UTC).isoformat()
     with conn:
-        conn.executemany(
-            "INSERT OR IGNORE INTO restatements "
-            "(cik, metric, end_date, kind, filed, prior_filed, prior_value, value, "
-            " rel_change, form, on_amendment, material, detected_run, detected_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                (e.cik, e.metric, e.end_date, e.kind, e.filed, e.prior_filed,
-                 e.prior_value, e.value, e.rel_change, e.form,
-                 int(e.on_amendment), int(e.material), run_id, now)
-                for e in events
-            ],
-        )
-    return len(events)
+        return _write_events(conn, events, run_id)
+
+
+def ingest_revisions(conn: sqlite3.Connection, cik: str, norm: dict,
+                     run_id: int | None = None) -> list[Restatement]:
+    """Diff, record the events, advance the vintage baseline -- all or none.
+
+    The defect this exists for: ingest_filer ran diff, persist_vintages and
+    record as three separate autocommitted transactions. persist_vintages is
+    what makes a revision "already known" (diff keys on the stored `filed`
+    dates), so a crash -- a Ctrl-C into the resumable backfill, or any
+    exception out of the event write -- between the vintage commit and the
+    event commit destroyed that filer's revision history permanently: the
+    rerun re-downloads, re-normalizes, and finds nothing new, because the
+    baseline moved without the events being written. Nothing reports it; the
+    filer looks like one that simply never revised anything.
+
+    One transaction closes the window. Events are written BEFORE the vintages
+    as well, so even a reader watching mid-transaction never sees a baseline
+    that has outrun its events.
+    """
+    with conn:
+        events = diff(conn, cik, norm)
+        _write_events(conn, events, run_id)
+        _write_vintages(conn, cik, norm)
+    return events
 
 
 def events(cik: str | None = None, since: str | None = None,

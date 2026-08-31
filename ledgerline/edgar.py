@@ -390,9 +390,13 @@ CREATE INDEX IF NOT EXISTS signals_cik_asof ON signals (cik, as_of);
 CREATE INDEX IF NOT EXISTS signals_gate ON signals (gate_version, as_of);
 CREATE INDEX IF NOT EXISTS signals_run ON signals (run_id);
 -- The append-only invariant, enforced rather than stated: prose is not an
--- invariant, RAISE(ABORT) is. These triggers are why the writer uses INSERT
--- OR IGNORE and never OR REPLACE -- OR REPLACE would fire the delete trigger
--- and abort, which is correct.
+-- invariant, RAISE(ABORT) is. The writer uses INSERT OR IGNORE and never OR
+-- REPLACE: a REPLACE deletes the row it conflicts with -- by signal_id or by
+-- the unique index on seq, which can be a published signal the statement
+-- never names -- and the delete trigger below aborts it. That only holds
+-- with PRAGMA recursive_triggers ON, which SQLite leaves OFF by default;
+-- db() turns it on for exactly this reason, and OR IGNORE is unaffected
+-- because it deletes nothing.
 CREATE TRIGGER IF NOT EXISTS signals_no_update
 BEFORE UPDATE ON signals BEGIN
     SELECT RAISE(ABORT, 'signals is append-only: emit a new signal, do not edit');
@@ -588,17 +592,38 @@ MIGRATIONS: list = [_migration_1, _migration_2, _migration_3]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Apply outstanding migrations. Idempotent: user_version records progress."""
+    """Apply outstanding migrations. Idempotent: user_version records progress.
+
+    BEGIN IMMEDIATE and not `with conn:`. Python's sqlite3 opens a transaction
+    only for DML, so a step's CREATE TABLE, ALTER and PRAGMA autocommitted one
+    statement at a time and the version bump committed separately from the
+    work it records -- a step that half-applied left the schema ahead of
+    user_version with nothing to say it had happened, and the next open re-ran
+    it against a database it had already changed. Inside an explicit
+    transaction SQLite makes DDL and the user_version write roll back with
+    everything else, so a step and its marker land together or not at all.
+    Today's three steps are individually self-guarding; MIGRATIONS is
+    append-only and the first step that mixes DDL with a backfill would not
+    be.
+    """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for step, apply in enumerate(MIGRATIONS[version:], start=version + 1):
-        with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             apply(conn)
             conn.execute(f"PRAGMA user_version = {step}")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
 
 
 def db() -> sqlite3.Connection:
     os.makedirs(DATA, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # Without this the signals delete trigger never fires on an INSERT OR
+    # REPLACE, and the append-only invariant is a comment rather than a rule.
+    conn.execute("PRAGMA recursive_triggers = ON")
     conn.executescript(SCHEMA)
     _migrate(conn)
     return conn

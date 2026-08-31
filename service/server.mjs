@@ -23,10 +23,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FEED = process.env.LEDGERLINE_FEED ??
   path.join(HERE, "..", "reports", "feed", "signals.jsonl");
 const PORT = Number(process.env.PORT ?? 8787);
-const HOST = "localhost"; // loopback only, deliberately not configurable --
-// the name rather than the IPv4 literal, so Node binds both 127.0.0.1 and
-// ::1 and either spelling of the address answers. Still never reachable
-// from another machine.
+const HOST = "localhost"; // the canonical name shown in the address bar.
+// Listening happens on BOTH loopback literals below: binding the name binds
+// only whichever family resolves first, and binding "::" would listen on
+// every interface. Two explicit loopback listeners keep it local-only with
+// both spellings answering.
 
 let cache = { mtimeMs: -1, size: -1, records: [] };
 
@@ -109,6 +110,15 @@ function send(res, status, body) {
 }
 
 const server = http.createServer((req, res) => {
+  // One canonical address. Anyone arriving via 127.0.0.1 or [::1] is sent to
+  // http://localhost:8787 so the address bar always reads the same way.
+  const host = String(req.headers.host ?? "");
+  if (host.startsWith("127.0.0.1") || host.startsWith("[::1]")) {
+    res.writeHead(301, { Location: `http://localhost:${PORT}${req.url}` });
+    res.end();
+    return;
+  }
+
   let records;
   try {
     records = loadFeed();
@@ -181,7 +191,10 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
+const server6 = http.createServer(server.listeners("request")[0]);
+server6.on("error", () => { /* no IPv6 loopback on this machine; IPv4 covers it */ });
+server6.listen(PORT, "::1");
+server.listen(PORT, "127.0.0.1", () => {
   console.log(`ledgerline read service on http://${HOST}:${PORT}`);
   console.log(`feed: ${FEED}`);
   console.log("local development only; the signal is unvalidated " +

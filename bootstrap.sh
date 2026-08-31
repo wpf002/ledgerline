@@ -67,7 +67,6 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.7",
 ]
-api = ["fastapi>=0.111", "uvicorn[standard]>=0.30", "psycopg[binary]>=3.1"]
 
 [project.scripts]
 ledgerline = "ledgerline.cli:app"
@@ -183,7 +182,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: mypy ledgerline

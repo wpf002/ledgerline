@@ -18,7 +18,6 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.7",
 ]
-api = ["fastapi>=0.111", "uvicorn[standard]>=0.30", "psycopg[binary]>=3.1"]
 
 [project.scripts]
 ledgerline = "ledgerline.cli:app"

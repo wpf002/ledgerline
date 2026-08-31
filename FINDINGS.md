@@ -194,3 +194,128 @@ two modules, and the test fixtures never reported the same period twice, so a
 half-fix looked total. Fixture realism is load-bearing here.
 
 ---
+
+## 6. Measured during the instrumentation build (2026-08-30, post-KILL)
+
+Added after the Phase 0 KILL, while building the measurement and honesty
+infrastructure. Every number here is a **finding, not a fix** — and none of
+them, singly or together, explains the KILL. Each is a hypothesis the new
+instrumentation makes measurable for the first time; the only thing entitled
+to test any of them is a fresh pre-registration on data that did not exist on
+2026-08-30.
+
+### 6a. Diagnostic-level silent abstention
+
+The filer-level coverage gate was the right fix applied to the right function,
+and it looked total because no test ever asked how many diagnostics a
+*scoreable* filer actually evaluated. Measured at 2024-05-15 on a 250-filer
+sample: 67.6% scoreable, and of those 169, exactly **1** had all 13
+diagnostics evaluated — median **10 of 13**, minimum 2. `gross_margin`, the
+heaviest weight at 0.3818, was absent in 24.3% of scoreable filers.
+
+The worst case was structural: one filer's computable diagnostics carried so
+little weight that no z-value whatsoever could reach `THRESHOLD` — and it
+reported `score 0.0 / gated_in False / scoreable True`. That is the exact
+defect the coverage gate was written to prevent ("not score=0.0, which was
+indistinguishable from assessed, looks clean"), resurfacing one level down.
+Fixed at the delivery boundary in gate 3.1.0: below `MIN_SCOREABLE_WEIGHT`
+the verdict is `scoreable=False` with reason `CANNOT_REACH_THRESHOLD`, and an
+unscoreable filer's score is **null in the contract, never 0.0**.
+
+"Half the universe is scored on a fraction of the diagnostic set" reads like
+an explanation for the 0.287 recall. It is not one. Recorded, measurable,
+untested.
+
+### 6b. The diluted_shares structural ceiling
+
+`AVERAGED_FLOWS` correctly refuses to difference a weighted-average share
+count (differencing produced 266 negative share counts before the rule
+existed). A filer tagging quarterly diluted shares in each 10-Q but only an
+annual figure in the 10-K therefore structurally cannot exceed 3 of 4
+quarters — a **0.75 coverage ceiling** — while the global `COVERAGE_MIN` of
+0.90 judges it against 1.0. Result: `dilution_yoy` is suppressed in **92.3%**
+of scoreable filers, and its calibrated weight (0.0949) was fitted on the ~8%
+of tuning rows where it existed.
+
+Measured, not acted on. Unsuppressing it would apply that weight to a
+population it was never fitted on — an uninterpretable score change that
+would inevitably be read as an improvement. The coverage dashboard reports
+`expected` (0.75) beside `achieved`; acting waits for a re-measurement under
+a new pre-registration.
+
+### 6c. The /A-form restatement criterion misses 99% of revisions
+
+`label.py`'s RESTATEMENT criterion scans for a form ending in `/A`. Measured
+across 12 cached filers: **6 of 624 revisions (0.96%)** arrive that way — the
+other 99% arrive as revised comparatives inside ordinary 10-Ks and 10-Qs.
+`restate.py` therefore detects on vintage-list growth, carrying
+`on_amendment` as a labeled subset rather than the trigger.
+
+`label.py` itself is deliberately **not** changed: it is a criterion of the
+Phase 0 label set, and editing a labeling criterion after the holdout was
+scored means the Phase 0 label set is no longer reproducible from the code.
+Whether the label should use vintage-growth events is a future
+re-measurement question.
+
+### 6d. 52/53-week label contamination, ~1.1% of trips
+
+A 14-week quarter compared YoY against a 13-week quarter measures calendar,
+not business: 17–20% of filers run a 52/53-week calendar, detected long
+quarters carry a median +7.4% revenue lift over their neighbours, and median
+|revenue_accel| is 62% higher in quarters whose YoY chain touches one.
+On the *label* side, **25 of 2,216** revenue-decel trips (~1.1%) touch a
+14-week comparison, of which roughly half are marginal enough for the extra
+week to account for the trip — call it ~0.5% of the label.
+
+The gate side is guarded (`yoy_at` refuses non-comparable spans, shipped with
+a `gate_version` bump because it changes scores). The label side is left
+alone for the same reason as 6c: scores are versioned, labels are the frozen
+half of the one clean measurement this project has.
+
+### 6e. 67% thirteen-year attrition the universe cannot see
+
+The current universe is a scrape of *today's* index membership, so every
+filer delisted, acquired or bankrupted before today is absent. Measured from
+the SEC quarterly full-index, which is point-in-time by construction:
+**8,021** CIKs filed a periodic report in 2011Q1, **6,190** in 2024Q1, and
+only **2,629** appear in both — 67% attrition over thirteen years.
+
+The direction is one-way and it is the most tempting sentence in this file:
+the missing two-thirds are disproportionately where deterioration actually
+*ends*, so the generated positive set is enriched in mild recoverable cases
+and the measured 0.287 hit rate is **plausibly biased downward**. Recorded,
+not acted on. It does not license a re-run: `prereg.json` says do not retune
+and re-run against this holdout, and a survivorship-free case set is a
+*different* case set requiring a new split and a new pre-registration
+committed before it is scored. `fullindex.survivorship_gap()` measures;
+nothing rebuilds cases from it.
+
+### 6f. The companyfacts cache was permanent for a document that grows
+
+`edgar.py` cached companyfacts permanently on the reasoning "a fact is
+immutable once filed." True of a FACT, false of the DOCUMENT — a per-company
+aggregate that grows with every filing. The live consequence: `scan` detected
+a new 10-Q via the daily index, then scored the facts file written at
+backfill time — **the filing that triggered the scan was not in the data the
+scan scored**. Fixed: callers that just learned the filer filed pass
+`refresh=True`, which skips the cache read but never the write, and
+`ingest_state.facts_filed_max` is the staleness key that decides who needs a
+refetch.
+
+### 6g. Provisional constants — sample-derived, labeled as such
+
+Several shipped constants were set from samples, not the universe, and each
+says so in its own docstring (`PROVISIONAL`) until the first full-universe
+run replaces it:
+
+| constant | set from | module |
+|---|---|---|
+| `MATERIAL_REL` (1% materiality; 42.5% of revisions below it) | 12 filers, 624 revisions | `restate.py` |
+| `DERIVED_FRACTION_HIGH` (0.50 tripwire; observed max 0.457) | 34 filers | `provenance.py` |
+| 52/53-week detection constants | 91 filers | `fiscal.py` |
+| coverage/abstention numbers (§6a) | 250 filers at one date | `coverage.py` |
+| label contamination (§6d) | 2,216 trips | — |
+
+A constant that looks derived but was set from 12 filers is a number that
+implies more measurement than happened. The label is the fix available today;
+the re-derivation is the fix that needs the full universe.

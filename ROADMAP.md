@@ -38,9 +38,20 @@ built. The kill condition is committed before the test runs.
 > adversarial audit. The gate finds real deterioration — it just finds too
 > little of it, and it is noisier than a two-line rule.
 
-Status: **74 tests passing**, no network required. Fixtures are synthetic
+Status: **318 tests passing**, no network required. Fixtures are synthetic
 XBRL-shaped payloads; each test reproduces a specific documented bug or
 enforces a specific decision.
+
+**What was built after the KILL, and why that is not a contradiction.** The
+phase designs were reconciled against the verdict and re-scoped: what shipped
+is measurement and honesty infrastructure — the frozen KILL record every score
+carries (`status.py`), run bookkeeping, vintage/restatement events, the
+abstention taxonomy and coverage dashboard, the append-only signal ledger, the
+retest reserve, the delivery contract with its required validation block, the
+forward track record, and the survivorship-free registry. Nothing that shipped
+scores by default, distributes a score, or presents the gate as validated.
+Each §5–§10 section below records what was built versus cut, and why. The
+measured findings the build produced are FINDINGS §6.
 
 **Build log, 2026-08-30.** Infrastructure bootstrapped, S&P 1500 universe set
 (1503 of 1504 tickers resolved to a CIK), companyfacts backfilled for all of
@@ -378,6 +389,18 @@ Deliverable: one report.
   with high `derived_fraction` gets labeled rather than silently emitted. Same
   discipline as Genesis's CALIBRATED/ESTIMATED/INVENTED gate.
 
+**Outcome (2026-08-30): built, as ingestion — not as a scoring schedule.**
+`ingest.py` owns the run lifecycle (`job_runs` rows that survive crashes and
+retries, `ingest_state` checkpointing in the database), the migration helper
+(`PRAGMA user_version`, additive only) that every later table went through,
+`restate.py` emits restatement events from vintage growth, and `provenance.py`
+labels high-derived readings. The companyfacts staleness defect found here —
+scan scored a facts file that predated the filing that triggered the scan —
+is FINDINGS §6f. The scheduled job is an ingestion job: `scan` scores only on
+an explicit opt-in, because a daily scored feed from a gate with a 0.512
+per-filer false-positive rate is a distribution mechanism for an invalidated
+claim. Cut: nothing from this phase; it was signal-independent throughout.
+
 ## 6. Phase 2 — metric layer
 
 - Segment-level revenue where filers tag it.
@@ -386,11 +409,42 @@ Deliverable: one report.
 - SIC-based peer sets (`universe.fetch_sic` already pulls the code).
 - Coverage dashboard: which filers are scoreable, and why not.
 
+**Outcome (2026-08-30): built as measurement; the score-changing half cut.**
+Built: `reasons.py` (the closed abstention taxonomy), `diagnose()`
+instrumented to record its own None-reasons, `fiscal.py` with the `yoy_at`
+span guard on the GATE side (shipped as gate 3.1.0, because it changes
+scores and scores are versioned), the coverage dashboard (`coverage.py`),
+and peer-set construction/coverage in `peers.py`. Cut: `abstain.py` (would
+re-derive from outside what diagnose() now reports from inside — two copies
+drift); acting on the diluted_shares 0.75 ceiling (unsuppressing a diagnostic
+in ~92% of the universe under a weight fitted on the ~8% where it existed —
+measured instead, FINDINGS §6b); the label-side 52/53-week guard (editing a
+labeling criterion after the holdout was scored breaks reproducibility —
+FINDINGS §6d); and segment revenue (companyfacts strips dimensional facts, so
+it needs per-filing XBRL fetches that destroy the Tier 0 cost architecture).
+The abstention measurements themselves are FINDINGS §6a.
+
 ## 7. Phase 3 — scoring
 
 - Peer-relative overlay (`peer_z` is built, unwired) — within-SIC, so a
   sector-wide inventory build does not fire on every name in the sector.
 - Persist every emitted signal with its full flag payload for Phase 6 scoring.
+
+**Outcome (2026-08-30): persistence built; the overlay cut.** Built:
+`emit.py` and the append-only `signals` table (triggers, not prose, enforce
+append-only), `gate_fingerprint()`, `replay` over tuning cutoffs, the
+`signals` read command, and the emit hook inside `scan`. Every scoreable
+evaluation is a permanent row with its run denominator — abstentions
+included, because a track record without its denominator is a highlight reel.
+Cut: the peer suppression overlay — suppression can only remove fires, recall
+is what failed, and the false-positive criterion passed with 0.0017 of
+headroom, so there is almost nothing for it to buy; building it disabled
+behind a flag that cannot flip for ~18 months is padding. Its counterfactual
+`score_ex_peer`, printed beside the live score, would read as an improvement
+to a gate that failed on recall. Also cut: `replay --split holdout` in any
+form — the holdout was scored once, and a queryable table of holdout scores
+is a re-scoring surface with a warning label. `replay` refuses it outright,
+as does `calibrate.build_dataset`; both refusals are pinned by tests.
 
 ## 8. Phase 4 — narration (the only LLM in the system)
 
@@ -402,6 +456,22 @@ Deliverable: one report.
 - Every claim must map to a diagnostic in the payload. Assertions without a
   backing diagnostic fail the response and trigger a repair pass.
 
+**Outcome (2026-08-30): re-scoped from "narrated warning" to
+"provenance-legible description," then built under that constraint.** The
+reconciled design cut this phase outright — prose is exactly the layer where
+the KILL banner gets skimmed past. What shipped keeps the hard constraints
+and inverts the framing: `narrate/` describes which measures moved, how far
+from the filer's own trailing median, on which filings — verifiably faithful
+whether or not the numbers predict anything. No model output ever reaches a
+scoring decision (pinned by a test that re-evaluates after narrating); a
+deterministic verifier rejects any figure that does not trace to the payload
+and any predictive or advisory language; one repair pass, then the narration
+is refused and the gate's own deterministic flag sentences publish instead —
+prose written by the arithmetic. Every rendered status opens with the Phase 0
+banner. Content-hash dedupe and a per-run budget cap hold the cost regardless
+of the gate's selectivity, because the per-FILER false-positive rate (0.512)
+makes "runs only on fires" no cost control at all.
+
 ## 9. Phase 5 — delivery
 
 - JSON contract boundary (per §3.3): Python emits signal records, Fastify +
@@ -409,6 +479,21 @@ Deliverable: one report.
 - Daily digest email; per-filer webhook.
 - Signal history append-only. A published signal is never edited — a revised
   view is a new signal referencing the prior one.
+
+**Outcome (2026-08-30): the contract built; the push channels and the stack
+cut.** Built: `api/contract.py` + `api/schema.py` — the versioned envelope in
+which the validation block is a required field computed from the frozen
+Phase 0 numbers, never a footer; an unscoreable filer's score is **null**,
+never 0.0; the JSONL export (`publish`) and a text-only `digest` whose
+expected-false-positives line is computed from the frozen rate and pinned by
+a byte-offset test to precede the first ticker. Cut: the daily digest email
+and per-filer webhook — an email naming a ticker is, on this gate's own
+numbers, more often wrong than right, and a webhook is where the consumer
+drops the validation block; the Fastify + Prisma + Postgres stack — replaced
+by a single-file, node-builtins-only, loopback-only reader (`service/`) that
+never computes a score and refuses to serve a record without its validation
+block. The supersedes/revision chain was cut too: a content-addressed
+signal_id already makes re-emits idempotent and changed payloads new rows.
 
 ## 10. Phase 6 — track record, Phase 7 — scale
 
@@ -422,14 +507,53 @@ Deliverable: one report.
   Tier 0 is one daily-index request regardless. Verify empirically before
   scaling; the 24-month performance gate applies.
 
+**Outcome, Phase 6 (2026-08-30): the reserve and the ledger built early; the
+statistics that would imply validation cut.** Built out of order,
+deliberately: the retest reserve (`retest.py` — a reserved evaluation set is
+only legitimate if hashed *before* anyone designs a revision, and everyone
+who has read the KILL already knows recall is what failed), with its power
+calculation and alpha budget. Built: `resolve`/`track`/`pending`, `label.py`'s
+horizon kwarg (short-horizon rows carry a **distinct** label_rule — only
+horizon 4 is the pre-registered rule), append-only `signal_scores` (a
+resolution is a vintage; a restatement can flip it), `wilson()` and the raw
+score-bin table. The comparability rules are enforced by tests, not
+docstrings: `live_stats()` reproduces `harness.verdict()`'s arithmetic
+number-for-number; the two false-positive denominators are distinct keys with
+the bias direction in the payload; a live per-quarter recall is never
+compared to the per-case 0.287; the Phase 0 values travel as a FLOOR, never a
+grade — "above reference" wording is banned — and `monitor()` says
+INSUFFICIENT below ~60 resolved deteriorating quarters. Cut: the Brier score,
+Murphy decomposition, probability link and reliability diagram — the only
+data to plot today is `replay` over the split the link's intercept was fitted
+on, and a calibration curve on its own training data is the textbook way to
+imply validation that does not exist; `retest.score()` and the McNemar
+machinery — scoring cannot run until ~2028, and a statistical test written
+eighteen months before first use drifts; and the "retuned or pulled"
+24-month watch — there is no validated performance to gate against.
+
+**Outcome, Phase 7 (2026-08-30): the registry and the cost model built; the
+expansion cut.** Built: `fullindex.py`, the survivorship-free filer registry
+from the SEC quarterly full-index (point-in-time by construction, 4 requests
+a year, no licence) and `survivorship_gap()` — the 67% thirteen-year
+attrition measurement, FINDINGS §6e, recorded and not acted on; and
+`cost.py`, the replay cost model driven by the exact historical filing-
+arrival series, which verifies the Tier-0 claim empirically instead of
+asserting it. Cut: the Russell 3000 expansion — historical membership is
+licensed IP not reconstructable from a free source, so a Russell universe
+would be *more* survivorship-biased than the scrape it replaces, and scaling
+the scoring surface of a failed gate scales its false positives (~18 → ~115
+false fires per quarter) and nothing else; `cost --mode live`; and the
+24-month performance gate, cut with Phase 6's watch for the same reason.
+
 ---
 
 ## Open items
 
 None blocking. Two to revisit at their phase:
 
-1. **Fiscal-calendar handling** (Phase 2) — the ±1-month YoY match is a
-   heuristic. 53-week years will misfire. Not blocking Phase 0, since it affects
-   positives and controls symmetrically.
+1. **Fiscal-calendar handling** (Phase 2) — resolved on the gate side:
+   `fiscal.py` detects 52/53-week calendars and `yoy_at` abstains from
+   14-vs-13-week comparisons (gate 3.1.0). The label side is deliberately
+   unchanged — FINDINGS §6d records the ~1.1% contamination and why it stays.
 2. **Delivery-layer language** (Phase 5) — revisit the Python/TS boundary only if
    the API starts needing to recompute rather than read.

@@ -194,3 +194,19 @@ def test_a_single_flag_cannot_gate_in():
     one_flag_score = heaviest * signals_v3.Z_CAP / signals_v3.SCORE_DIVISOR * 100
     gated = one_flag_score >= signals_v3.THRESHOLD and signals_v3.MIN_FLAGS <= 1
     assert not gated, "a single flag gates in"
+
+
+# ------------------------------------------------------------ holdout hygiene
+
+
+def test_calibration_refuses_the_holdout_outright():
+    """The holdout was scored once, 2026-08-30, and prereg.json says do not
+    retune against it. replay already refuses it at the persistence layer;
+    this pins the same refusal at the FITTING layer, where touching it would
+    be worse -- a dataset built from holdout rows is a retune in progress, not
+    a report. The guard must fire before any file or split is read, so it
+    holds even on a machine that has the data."""
+    from ledgerline import calibrate
+
+    with pytest.raises(RuntimeError, match="never touch the holdout"):
+        calibrate.build_dataset(split="holdout")

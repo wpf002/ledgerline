@@ -27,6 +27,12 @@ Records:
     ledgerline digest                    one run's results as a short text
                                          report, written to a file
     ledgerline contract-schema           the exact shape of a published entry
+    ledgerline resolve                   judge saved assessments against the
+                                         filings that actually followed
+    ledgerline pending                   assessments still waiting on the
+                                         filings that will decide them
+    ledgerline track                     how past assessments turned out, next
+                                         to the failed test's own numbers
 
 Research (the validation experiment; most are one-shot):
     build-cases, periods, split, commit-rule, calibrate, run-test,
@@ -53,6 +59,7 @@ from . import coverage as cov
 from . import peers as peer_mod
 from . import provenance as prov
 from . import status as phase0
+from . import track as trackrec
 from . import universe as uni
 from .api import contract
 from .api import digest as run_digest
@@ -919,6 +926,163 @@ def replay(split: str = typer.Option("tuning", help="Which half of the cases "
                f"{already} {'was' if already == 1 else 'were'} already there "
                "and left untouched. Row counts only -- this command never "
                "reports performance. Browse them: ledgerline signals")
+
+
+# ------------------------------------------------------- the track record
+
+
+@app.command()
+def resolve(as_of: str = typer.Option(None, help="Judge outcomes using only "
+                                      "filings made by this date (YYYY-MM-DD). "
+                                      "Defaults to today."),
+            gate_version: str = typer.Option(None, help="Judge only "
+                                             "assessments made by this exact "
+                                             "detector version. Defaults to "
+                                             "the current one.")):
+    """Judge every saved assessment against what the company actually filed
+    in the quarters that followed -- one, two and four quarters out.
+
+    Only settled answers are written down. A company whose deciding filings
+    have not arrived yet stays pending rather than being counted as fine.
+    Safe to re-run daily: an unchanged answer writes nothing, and a figure a
+    company later revised is recorded as a second entry beside the first,
+    never as an overwrite -- what was believed on each date stays on record.
+    Designed to run right after `ledgerline scan`.
+    """
+    out = trackrec.resolve(as_of=as_of, gate_version=gate_version)
+    typer.echo(f"Newly judged: {out['resolved']}. "
+               f"Changed by a company's own revision: {out['revised']}. "
+               f"Already judged, unchanged: {out['unchanged']}.")
+    typer.echo(f"Still waiting on future filings: {out['pending']} "
+               f"(plus {out['immature']} too recent to even check yet).")
+    typer.echo("See where things stand: ledgerline track")
+
+
+@app.command()
+def pending(gate_version: str = typer.Option(None, help="Show only "
+                                             "assessments made by this exact "
+                                             "detector version."),
+            limit: int = typer.Option(20, help="How many waiting assessments "
+                                               "to list.")):
+    """Saved assessments still waiting to be judged, and the earliest date
+    the filings that decide each one could have arrived.
+
+    A short track record usually means a young one, not a bad one -- this
+    shows which answers are still in the future.
+    """
+    rows = trackrec.pending(gate_version=gate_version)
+    if not rows:
+        typer.echo("Nothing is waiting. Either every saved assessment has "
+                   "been judged, or none have been saved yet "
+                   "(ledgerline scan / ledgerline replay save them).")
+        return
+    typer.echo(f"{len(rows)} assessment-horizon pairs are waiting for the "
+               "filings that will decide them:")
+    for r in rows[:limit]:
+        typer.echo(f"  {(r['ticker'] or r['cik']):8} assessed {r['as_of']}, "
+                   f"judged {r['horizon_q']} quarter"
+                   f"{'s' if r['horizon_q'] != 1 else ''} out -- "
+                   f"answer possible from {r['earliest_resolvable']}")
+    if len(rows) > limit:
+        typer.echo(f"  ... and {len(rows) - limit} more (--limit shows them)")
+
+
+def _echo_rate(name: str, block: dict, bar: str) -> None:
+    """One proportion as a sentence: value, count, interval, and its bar."""
+    if block["value"] is None:
+        typer.echo(f"  {name}: nothing to measure yet "
+                   f"({block['quarters']} settled quarters).")
+        return
+    typer.echo(f"  {name}: {block['value']:.1%} "
+               f"({block['fired']} of {block['quarters']} quarters; the true "
+               f"rate is plausibly {block['wilson_low']:.1%} to "
+               f"{block['wilson_high']:.1%}). {bar}")
+
+
+@app.command()
+def track(gate_version: str = typer.Option(None, help="Report on this exact "
+                                           "detector version. Defaults to "
+                                           "the current one."),
+          as_json: bool = typer.Option(False, "--json", help="Machine-readable "
+                                       "output, and save a dated snapshot so "
+                                       "changes over time can be measured.")):
+    """How saved assessments actually turned out, shown next to the numbers
+    the detector posted when it failed its own test.
+
+    The failed test's numbers are a floor a future revision must beat, never
+    a grade being defended. Judged-after-the-fact rates here are per
+    company-quarter and are only ever compared to the practice-half rate
+    measured the same way -- never to the sealed test's per-company figure,
+    which counted something different.
+    """
+    try:
+        payload = trackrec.record_payload(gate_version=gate_version)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(2) from exc
+    if as_json:
+        trackrec.snapshot(payload)
+        typer.echo(json.dumps(payload, indent=2))
+        return
+    # The banner leads. There is no flag that suppresses it.
+    typer.echo(phase0.banner())
+    typer.echo("")
+    ref = payload["reference"]
+    hold = ref["holdout_per_case"]
+    tune = ref["tuning_per_quarter"]
+    typer.echo("The floor -- the failed detector's own numbers, not a target:")
+    typer.echo(f"  Sealed test (per company): caught "
+               f"{hold['positive_hit_rate']:.1%} of companies that went on "
+               f"to deteriorate (needed at least "
+               f"{hold['required_hit_rate']:.0%}).")
+    typer.echo(f"  Practice half (per company-quarter): flagged "
+               f"{tune['recall_on_deteriorating_quarters']:.1%} of quarters "
+               "that were followed by deterioration. Only this per-quarter "
+               "rate is comparable to the judged rates below.")
+    typer.echo("")
+    for h, block in payload["horizons"].items():
+        live = block["live"]
+        back = block["replay_backfill"]
+        typer.echo(f"Judged {h} quarter{'s' if h != '1' else ''} out"
+                   + (" (the horizon the test used):" if
+                      block["comparable_to_reference"] else
+                      " (a shorter window than the test used -- not "
+                      "comparable to the floor):"))
+        typer.echo(f"  Settled: {live['n_resolved']} live, "
+                   f"{back['n_resolved']} replayed from the practice half "
+                   f"(kept apart; the practice half proves nothing new). "
+                   f"Waiting: {block['n_pending']}.")
+        if live["n_resolved"]:
+            _echo_rate("Caught, of quarters that turned bad",
+                       live["recall_per_quarter"],
+                       f"Floor to beat: "
+                       f"{live['recall_per_quarter']['floor']['value']:.1%}.")
+            _echo_rate("False alarms, among never-deteriorated companies",
+                       live["fpr_per_quarter_control_filer"],
+                       "The frozen test posted 3.83%; early on this reads "
+                       "better than it is, because some quiet companies just "
+                       "have not broken yet.")
+        typer.echo("")
+    mon = payload["monitor"]
+    if mon["status"] == "INSUFFICIENT":
+        typer.echo(f"Comparison to the floor: too early to say anything. "
+                   f"{mon['n_resolved_deteriorating_quarters']} deteriorating "
+                   f"quarters have settled; a comparison is noise below "
+                   f"{mon['n_required']}.")
+    else:
+        reading = {
+            "BELOW_FLOOR": "running BELOW even the failed test's own rate",
+            "CONSISTENT_WITH_FLOOR": "consistent with the failed test's rate",
+            "ABOVE_FLOOR": "beating the failed test's own rate -- improvement "
+                           "over a failure, not evidence of success",
+        }[mon["status"]]
+        typer.echo(f"Comparison to the floor: {reading} "
+                   f"({mon['recall_per_quarter']:.1%} caught; plausibly "
+                   f"{mon['wilson'][0]:.1%} to {mon['wilson'][1]:.1%}, "
+                   f"floor {mon['floor']['value']:.1%}).")
+    typer.echo("Nothing retunes automatically: adjusting the detector to "
+               "its own live results would spoil the only untouched data "
+               "left. A change needs a person, and a new sealed test.")
 
 
 # ------------------------------------------------------- the re-test reserve

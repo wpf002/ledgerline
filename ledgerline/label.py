@@ -222,15 +222,25 @@ CRITERIA = (_revenue_decel, _margin_collapse, _ocf_break, _impairment, _restatem
 # -------------------------------------------------------------------- label
 
 
-def label(ticker: str, cik: str, norm: dict, as_of: str) -> Label:
-    """Did this filer deteriorate in the four quarters after `as_of`?
+def label(ticker: str, cik: str, norm: dict, as_of: str,
+          horizon: int = HORIZON_QUARTERS) -> Label:
+    """Did this filer deteriorate in the `horizon` quarters after `as_of`?
 
     Used two ways:
       - control group: gate fires but no deterioration follows -> false positive
       - positive set: the FIRST period where deterioration trips becomes the
         `broke` date, derived from filings rather than from memory
+
+    Honest limitation of `horizon`: at 1 or 2 quarters this is the same five
+    criteria over a shorter window, NOT the label Phase 0 validated. Only
+    horizon 4 is prereg.json's "fundamental_deterioration_2of5_within_4q",
+    and only horizon 4 is comparable to the reference numbers -- track.py
+    stamps each resolution's label_rule with its horizon so a short-horizon
+    row can never be silently compared to the 4-quarter result. MIN_CRITERIA
+    stays 2 at every horizon; relaxing it for short windows would make the
+    +1q number a different experiment wearing the same name.
     """
-    window = _forward_window(norm, as_of)
+    window = _forward_window(norm, as_of, horizon)
     out = Label(ticker=ticker, cik=cik, as_of=as_of,
                 horizon_end=window[-1] if window else None,
                 n_quarters_observed=len(window))

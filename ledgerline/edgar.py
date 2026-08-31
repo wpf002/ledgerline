@@ -401,6 +401,49 @@ CREATE TRIGGER IF NOT EXISTS signals_no_delete
 BEFORE DELETE ON signals BEGIN
     SELECT RAISE(ABORT, 'signals is append-only: emit a new signal, do not delete');
 END;
+
+-- Forward scoring of persisted signals at +1/+2/+4 quarters (track.py).
+-- resolved_at is IN the primary key because a resolution is a VINTAGE, not a
+-- fact: the deterioration label is computed from later filings and a
+-- restatement can flip it -- RESTATEMENT is itself one of the five criteria.
+-- Overwriting would silently rewrite history in the one table whose whole job
+-- is remembering what was known when (FINDINGS 5's defect in a new place).
+-- PENDING is never stored: the absence of a row IS pending, which also keeps
+-- the table from filling with daily restatements of ignorance. label_rule
+-- carries the horizon, so a +1q row can never be silently compared to the
+-- +4q pre-registered rule the holdout hit rate was measured against.
+CREATE TABLE IF NOT EXISTS signal_scores (
+    signal_id           TEXT NOT NULL,
+    horizon_q           INTEGER NOT NULL,
+    resolved_at         TEXT NOT NULL,
+    outcome             TEXT NOT NULL,    -- DETERIORATED | CLEAN
+    event_period        TEXT,
+    n_quarters_observed INTEGER NOT NULL,
+    criteria            TEXT,             -- json list of tripped criteria
+    label_rule          TEXT NOT NULL,
+    PRIMARY KEY (signal_id, horizon_q, resolved_at)
+);
+
+-- Dated snapshots of the live record. ROADMAP 10 asks whether performance
+-- decays; without a time series "decays" has nothing to be measured against.
+-- The two false-positive rates sit in separate columns because their
+-- denominators differ: _clean counts quarters not followed by deterioration,
+-- _control_filer counts quarters of filers with no resolved deterioration at
+-- all, and only the latter is comparable to the frozen Phase 0 0.0383. No
+-- brier column: the score-to-probability link was fitted on tuning and the
+-- only outcomes available today replay that same split (see reliability.py).
+CREATE TABLE IF NOT EXISTS track_record (
+    gate_version     TEXT NOT NULL,
+    horizon_q        INTEGER NOT NULL,
+    computed_at      TEXT NOT NULL,
+    n_resolved       INTEGER,
+    n_fires          INTEGER,
+    recall           REAL,
+    fpr_per_quarter_control_filer REAL,
+    fpr_per_quarter_clean         REAL,
+    payload          TEXT,               -- the full JSON, re-readable later
+    PRIMARY KEY (gate_version, horizon_q, computed_at)
+);
 """
 
 # Migrations, ordered and carried on PRAGMA user_version. CREATE TABLE IF NOT

@@ -1303,6 +1303,31 @@ def commit_rule():
     typer.echo(json.dumps(harness.write_prereg(), indent=2))
 
 
+def _practice_half_only(command: str) -> str:
+    """The refusal a person reads when a command that must never touch the
+    sealed half is pointed at it.
+
+    Two copies of this refusal had drifted apart. `replay` hand-typed its own
+    "2026-08-30" -- the same second-copy-of-the-frozen-record defect that was
+    fixed in render.CAVEAT, one command over -- and `calibrate` had no readable
+    refusal at all: it raised out of calibrate.build_dataset and a person got a
+    traceback, which is a refusal only to a programmer. status.spent_refusal()
+    exists to be the one copy of these words; this is it, wired to the two
+    commands that were not using it.
+
+    The sealed half is refused whether or not it has been scored: calibration
+    and replay must never read it, and on a machine that has not taken the shot
+    there is no date to quote either -- status.load() would raise.
+    """
+    lead = f"{command} works on the practice half only ('tuning'). "
+    if phase0.holdout_is_spent():
+        return lead + "The sealed test half is refused, because " + \
+            phase0.spent_refusal()
+    return (lead + "The sealed test half is reserved for one scoring run, "
+            "taken after the weights are fixed and committed, and nothing may "
+            "read it before then. There is no override flag.")
+
+
 @app.command()
 def calibrate(split: str = "tuning"):
     """Set the detector's dials using the practice half only.
@@ -1310,6 +1335,17 @@ def calibrate(split: str = "tuning"):
     Never touches the sealed half; it refuses if asked. Commit
     ledgerline/data/calibration.json before running the test.
     """
+    # calibrate.build_dataset raises for the sealed half and always did, so
+    # nothing was ever scored -- but the person who typed it got a traceback
+    # rather than the written reason `replay` and `run-test` both print. Same
+    # refusal, same words, said the way a person can read.
+    if split != "tuning":
+        typer.echo(_practice_half_only("calibrate") if split == "holdout" else
+                   f"calibrate works on the practice half only ('tuning'). "
+                   f"There is no split named '{split}'; the two halves are "
+                   f"'tuning' and the sealed 'holdout'.")
+        raise typer.Exit(2)
+
     def progress(i, n, rows):
         if i % 25 == 0 or i == n:
             typer.echo(f"  {i}/{n} companies, {rows} company-quarters")
@@ -1371,6 +1407,13 @@ def run_test(split: str = typer.Option("tuning", help="Which half of the cases "
         typer.echo("run-test scores the practice half only ('tuning'), "
                    "because " + phase0.spent_refusal())
         raise typer.Exit(2)
+    # A name that is neither half reached harness.load_split and came back as a
+    # ValueError traceback, which is a refusal only to a programmer -- the same
+    # thing `calibrate` did with the sealed half.
+    if split not in ("tuning", "holdout"):
+        typer.echo(f"There is no split named '{split}'; the two halves are "
+                   "'tuning' and the sealed 'holdout'.")
+        raise typer.Exit(2)
     # The verdict leads, on both branches: a sheet of PASS rows with the failed
     # test nowhere on it is the loudest way this repo can imply a working gate.
     typer.echo(phase0.banner())
@@ -1405,13 +1448,17 @@ def replay(split: str = typer.Option("tuning", help="Which half of the cases "
     already happened. Safe to re-run: an assessment already on record is
     recognised and skipped, not duplicated.
     """
+    # The date in this refusal used to be typed in by hand. It happened to
+    # match the frozen record, which is exactly what makes that kind of copy
+    # dangerous -- nothing bound it, and the suite passed either way.
     if split != "tuning":
-        typer.echo("replay works on the practice half only ('tuning'). The "
-                   "sealed test half was scored exactly once, on 2026-08-30, "
-                   "and that one measurement is only meaningful while it "
-                   "stays the only one -- re-assessing those companies, even "
-                   "quietly into a database table, would be a second look. "
-                   "The tool refuses, and there is no override flag.")
+        # A name that is neither half is its own mistake, and telling someone
+        # who typed "tunign" that the sealed half is spent answers a question
+        # they did not ask.
+        typer.echo(_practice_half_only("replay") if split == "holdout" else
+                   f"replay works on the practice half only ('tuning'). "
+                   f"There is no split named '{split}'; the two halves are "
+                   f"'tuning' and the sealed 'holdout'.")
         raise typer.Exit(2)
     # The results being saved are scores, so the failed-test banner leads.
     typer.echo(phase0.banner())

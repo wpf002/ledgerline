@@ -319,3 +319,156 @@ run replaces it:
 A constant that looks derived but was set from 12 filers is a number that
 implies more measurement than happened. The label is the fix available today;
 the re-derivation is the fix that needs the full universe.
+
+---
+
+## 7. Adversarial review of the post-KILL code (2026-08-31)
+
+Thirty-one defects, found by reading the code written *after* the KILL against
+the invariants it was written to hold. Every one was reproduced against the
+live repository before it was touched — a command run, a page fetched, a
+figure recomputed from the cache — and every one now has a regression test
+that fails without its fix and names the defect in its docstring. **None was
+dismissed, and none turned out not to hold.** The suite went from 370 tests to
+450 across six commits.
+
+Nothing here re-scores the sealed half, and nothing here is a correction to
+the Phase 0 result. §7b says what the fixes do and do not move.
+
+### 7a. What was wrong, by class
+
+| Class | Count | What the defects had in common |
+|---|---|---|
+| Point-in-time and the arithmetic | 7 | A number that is not what the filings said at the cutoff |
+| The numbers a surface prints | 7 | A figure printed where nothing had been measured |
+| The database, and the files that leave it | 7 | A write that did not survive an interrupt, or went somewhere else |
+| The read service and its pages | 5 | Caller input that ended the process, or a wrong body that looks right |
+| The verdict on every surface | 5 | A score reaching a person without the failed test attached |
+
+What each class looked like in practice:
+
+- Debt counted twice; a balance sheet paired with a flow from a different
+  year; an outcome graded with knowledge that arrived a year after the window
+  shut; a fiscal calendar read off the untruncated snapshot and stamped with
+  a cutoff it had not reached.
+- A 0.0 hit rate on an empty denominator, printed beside the frozen 0.287
+  under the same "per-case" label; a 0.0 derived fraction for filers where it
+  was never computed; a clean bill of health, with a provenance stamp on it,
+  for a company where nothing was read; a verifier that let generated prose
+  cite a container and inherit every number underneath.
+- Two transactions where one was needed, so an interrupt destroyed a filer's
+  revision history for good; migrations with no rollback; append-only triggers
+  that INSERT OR REPLACE walked straight past; a CSV import that could hand a
+  watched symbol to a different company.
+- A malformed percent-escape, a wrong-shaped published file, and a record
+  admitted without the numbers its own sentence is derived from — each an
+  uncaught throw, which is to say an exit, taking every other route with it;
+  and paging parameters nobody validated, so `limit=-1` presented 39,563 of
+  39,564 records as a complete page.
+- `explain`, `narrations` and `run-test` each emitted a score or model-written
+  prose about a flagged company with no verdict on either stream; the digest
+  and the web Overview presented a replay over the threshold-fitting half as
+  "Latest run".
+
+By severity: 11 broke a stated invariant, 11 produced a wrong number or a
+wrong sentence, 9 were smaller — a message, a label, a spreadsheet cell.
+
+### 7b. What a green suite did not catch
+
+The suite was green at 370 tests on the commit before this review, and it had
+been green through the whole phase build. It did not catch:
+
+- **A holdout that could be scored a second time.** `ledgerline run-test
+  --split holdout` had no guard of any kind. `replay` refused the sealed half
+  and `calibrate` refused it; the one command whose entire job is to score a
+  split did not, and its report would have overwritten
+  `reports/backtest_holdout.json` — which is not in git and is the only full
+  record of the 2026-08-30 failure. One flag, and the project's single
+  remaining measurement would have been spent quietly, into a file.
+- **A path traversal in `publish`.** Company files were built as
+  `companies/<ticker>.json` from a ticker nothing had validated, and the
+  ticker column of an imported watchlist CSV is text from another tool by
+  design. A row spelled `../../../pwned` wrote a file three directories above
+  the feed while `publish` reported full success. The read side had matched
+  its ticker rather than trusted it since it was written; the write side
+  never did.
+- **`total_debt` counting the current maturities twice.** `us-gaap:LongTermDebt`
+  is the all-in figure and sat in the group that resolves the *noncurrent*
+  component, so any filing that tagged it without the noncurrent split had the
+  current portion added to a number that already held it. That grouping
+  entered in `c33ee74`, the repository's first commit — **it predates the
+  case set, the split, the pre-registration and the test.** Every reading of
+  net debt the project has ever published on an affected filer was overstated;
+  Jefferies at 2012-12-31 read 1,799,264,000 against a true 1,358,695,000.
+
+All three are the same shape: correct-looking code with no test asking the
+question. A green suite is evidence about the questions someone thought to
+ask.
+
+### 7c. Effect on the Phase 0 numbers — a finding, not a correction
+
+Two of the fixes change what the detector computes: `total_debt` is no longer
+double-counted, and `deferred_vs_revenue_gap` and `net_debt_to_ttm_ocf` now
+abstain rather than pair a stale balance with a current flow. Both of those
+diagnostics carry weight **0.0000**, so no score moves — but the gate needs
+two distinct measures out of line (`MIN_FLAGS = 2`), and that count does not
+look at weight. A retiring flag can therefore flip a company from flagged to
+quiet. Bounded, without scoring anything:
+
+- **The saved record.** Of 39,564 saved assessments, 2,610 carry one of the
+  two diagnostics and 338 of those were flagged. Not one of the 338 is left
+  below two measures if **both** diagnostics retire entirely. **No saved
+  verdict flips.**
+- **The frozen holdout report**, read and not re-run. 245 of its 387 companies
+  fired. Not one of them falls below two measures if both diagnostics retire.
+  So no company that fired stops firing, and the 51.2% of companies that
+  stayed fine and were flagged at least once — 107 of 209 controls —
+  **cannot fall.**
+- **The 28.7% caught** (47 of 164 positives with a qualifying lead) is not
+  bounded in both directions, and saying so matters more than a tidy answer.
+  The abstention fix can only take flags away, and taking one away can only
+  delay the quarter a company first fires, never advance it — a hit has to
+  land inside the pre-registered lead window, so on that fix alone recall can
+  only fall or stay. The debt fix is different: it moves the one measure that
+  reads `total_debt` (`net_debt` feeds `net_debt_to_ttm_ocf` and nothing
+  else), and a z-score can move either way, so where the two balances do share
+  a moment it could add a flag rather than remove one. What is certain is that
+  no company that fired stops firing.
+- **The 3.83% of quiet company-quarters flagged cannot be bounded at all**
+  from the frozen record: it stores each company's flags as a union across its
+  quarters, not per quarter. Measuring it means scoring the sealed half a
+  second time, which the tool now refuses and which nothing in this review
+  licenses.
+
+No bound here points toward a passing verdict, and the one quantity that
+could move upward — recall, by at most the handful of quarters where a
+corrected debt figure newly clears the trigger — would have to close a gap of
+31.3 percentage points to reach the 60% floor. The KILL stands, and this is
+the second time it is worth writing down (§6e was the first): a defect that would have made the detector look *worse* is not a
+reason to re-run the test, and a defect that would have made it look better
+would not be either. A corrected detector is a different detector, and the
+reserved company-quarters in `ledgerline/data/retests.json` are the only thing
+entitled to test it.
+
+### 7d. Nothing was skipped
+
+Every one of the 31 was reproduced and fixed. Two things were deliberately
+*not* done, each with a test that pins the decision:
+
+- A CSV import does not cross-check a supplied CIK against the SEC ticker map.
+  Import fetches nothing over the network, and that is a promise the code
+  keeps on purpose; a row whose symbol already belongs to another company is
+  refused instead.
+- `ShortTermBorrowings` is not treated as already inside `LongTermDebt`.
+  Commercial paper and revolver draws are not maturities of long-term debt.
+
+The sweep that closed the review found three more, all in the same class as
+the ones above and all now fixed: `calibrate --split holdout` refused by
+raising out of its own dataset builder, so the person who typed it got a
+traceback instead of a written reason; `replay`'s refusal carried a
+hand-typed copy of "2026-08-30" that nothing bound to the frozen record — the
+same second-copy defect that had just been fixed in the terminal caveat, one
+command over; and a split named neither half reached the loader and came back
+as a `ValueError` traceback. All three sealed-half refusals now read the same
+words from `ledgerline/data/phase0.json`, and moving that file moves all of
+them.

@@ -243,7 +243,7 @@ def test_no_entry_point_can_score_the_spent_holdout(tmp_path, monkeypatch):
     for argv, expect in (
             (["run-test", "--split", "holdout"], "retests.json"),
             (["replay", "--split", "holdout"], "no override flag"),
-            (["calibrate", "--split", "holdout"], "never touch the holdout")):
+            (["calibrate", "--split", "holdout"], "no override flag")):
         result = CliRunner().invoke(cli.app, argv)
         assert result.exit_code != 0, f"{argv[0]} scored the sealed half"
         # The tripwire firing means the command reached the scorer before it
@@ -269,3 +269,62 @@ def test_the_holdout_guard_is_keyed_on_the_frozen_record(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="no override flag"):
         status.refuse_spent_holdout("holdout")
     status.refuse_spent_holdout("tuning")  # the practice half is never refused
+
+
+def test_every_sealed_half_refusal_is_a_sentence_not_a_traceback(monkeypatch,
+                                                                 tmp_path):
+    """`calibrate --split holdout` refused by raising out of build_dataset, so
+    the person who typed it got a rich traceback instead of a written reason.
+
+    The refusal held -- nothing was ever scored -- but a traceback is a
+    refusal only to a programmer, and it is the one door of the three that did
+    not say what to do instead. replay and run-test both printed a sentence
+    and exited 2; calibrate now does too.
+    """
+    monkeypatch.setattr(calibrate, "DATASET_PATH", str(tmp_path / "ds.json"))
+    for argv in (["calibrate", "--split", "holdout"],
+                 ["replay", "--split", "holdout"],
+                 ["run-test", "--split", "holdout"]):
+        result = CliRunner().invoke(cli.app, argv)
+        assert result.exit_code == 2, argv
+        # SystemExit is the clean refusal; anything else is a crash wearing an
+        # exit code.
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Traceback" not in result.output
+        assert "retests.json" in result.output, argv
+    assert not os.path.exists(tmp_path / "ds.json")
+
+
+def test_no_refusal_hand_types_the_frozen_date(monkeypatch):
+    """replay's refusal carried its own typed copy of "2026-08-30".
+
+    It happened to match the frozen record, which is what makes that kind of
+    copy dangerous: nothing bound it, and the suite passed either way. Same
+    second-copy-that-drifts defect render.CAVEAT was fixed for, one command
+    over. Every sealed-half refusal now reads its date from phase0.json, so
+    moving the frozen record moves all of them.
+    """
+    real = status.load()
+    monkeypatch.setattr(status, "load",
+                        lambda: {**real, "scored_on": "2099-01-01"})
+    for argv in (["replay", "--split", "holdout"],
+                 ["calibrate", "--split", "holdout"],
+                 ["run-test", "--split", "holdout"]):
+        out = CliRunner().invoke(cli.app, argv).output
+        assert "2099-01-01" in out, argv
+        assert "2026-08-30" not in out, argv
+
+
+def test_a_split_that_is_neither_half_is_named_not_stack_traced():
+    """`run-test --split banana` reached harness.load_split and came back as a
+    ValueError traceback, and replay told the same typo that the SEALED half
+    was spent -- an answer to a question nobody asked. A name that is neither
+    half is now its own message, on all three commands."""
+    for argv in (["run-test", "--split", "banana"],
+                 ["replay", "--split", "banana"],
+                 ["calibrate", "--split", "banana"]):
+        result = CliRunner().invoke(cli.app, argv)
+        assert result.exit_code == 2, argv
+        assert "no split named 'banana'" in result.output, argv
+        assert "scored exactly once" not in result.output, argv
+        assert "Traceback" not in result.output, argv

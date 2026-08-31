@@ -33,7 +33,10 @@ permanently and reruns are fast.
 ```bash
 ledgerline watch --import my-list.csv   # add a whole spreadsheet of companies
 ledgerline groups                       # your own groupings, with counts
+ledgerline groups --add semis           # a group that exists and is empty
 ledgerline groups --assign semis --tickers NVDA,AMD,INTC
+ledgerline groups --unassign semis --tickers INTC
+ledgerline groups --delete semis        # the companies stay watched
 ledgerline watch --group semis          # and check --group / scan --group
 ```
 
@@ -55,12 +58,20 @@ ledgerline export watchlist --out watchlist.csv   # or signals, or runs
 ledgerline publish                                # the files the local viewer reads
 ```
 
-Every exported file leads with a comment line carrying the result of the
-failed 2026-08-30 test, so a spreadsheet that leaves this machine still says
-the detector missed its own bar. `publish` writes the assessment feed plus
-`watchlist.json`, `runs.json` and one file per company under `reports/feed/`;
-each of those carries the same record. Publishing reads what has already been
-saved and assesses nothing.
+`export` takes `watchlist`, `signals` or `runs`. Every exported file leads
+with a comment line carrying the result of the failed 2026-08-30 test, so a
+spreadsheet that leaves this machine still says the detector missed its own
+bar. Companies that could not be assessed are exported as rows with an empty
+score rather than a zero — they are the denominator, and without them a file
+can show precision and can never show recall.
+
+`publish` writes the assessment feed plus `watchlist.json`, `runs.json` and one
+file per company under `reports/feed/`; each of those carries the same record.
+It rewrites all of them every time, and removes any company file left over from
+an earlier publish that no watched company answers to now — a page still being
+served for a symbol that has since changed carries the same "published on
+<date>" footer as the live ones. Publishing reads what has already been saved
+and assesses nothing.
 
 ## Reading it in a browser
 
@@ -69,13 +80,20 @@ ledgerline publish        # write the files the viewer reads
 node service/server.mjs   # then open http://localhost:8787
 ```
 
-Four pages: the latest run, the whole watchlist (filter by group or by whether
-a company can be assessed, search by ticker), one page per company (the plain
-reading, the thirteen measures, the filings every number came from, anything
-later revised), and the run log. Nothing is installed and nothing is
-downloaded — it reads the published files and stays on loopback. Every page
-leads with the result of the failed test, and a page with nothing to show says
-which command would fill it.
+Four pages, all rendered on the server, none of them needing JavaScript:
+
+| Page | What is on it |
+| ---- | ------------- |
+| `/` | the latest run: how many were assessed, how many could not be, what fired |
+| `/watchlist` | every watched company; filter by group or by whether it can be assessed, search by ticker or name |
+| `/company/TICKER` | one company: the same plain reading `ledgerline explain` prints, the thirteen measures, the filings every number came from, anything later revised, the provenance trail |
+| `/activity` | the run log: when, what it cost, what it read, what it could not assess |
+
+Nothing is installed and nothing is downloaded — it reads the files `publish`
+wrote and stays on loopback. Every page leads with the result of the failed
+test, before the masthead and before any number. A page with nothing to show
+says which of the four reasons it is empty and which command would fill it: an
+unknown group is a typo, a group nobody has filled in is not.
 
 ## What the output means
 

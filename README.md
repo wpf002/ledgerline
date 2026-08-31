@@ -31,6 +31,12 @@ ledgerline fetch
 ledgerline explain AAPL
 ```
 
+Or read it in a browser instead of the terminal — `ledgerline publish` then
+`node service/server.mjs`, and open **http://localhost:8787**: the latest run,
+the watchlist, a page per company, and the run log. Nothing is installed for
+it and nothing leaves the machine. Every page leads with the failed test above,
+because a dashboard is not evidence that the detector works.
+
 ## Repo setup
 
 ```bash

@@ -1113,6 +1113,12 @@ def publish(since_seq: int = typer.Option(0, help="Continue an earlier export: "
         typer.echo(f"Also wrote watchlist.json ({res['watched']} companies), "
                    f"runs.json ({res['runs']} runs) and {res['companies']} "
                    f"company files under {os.path.join(res['dir'], 'companies')}.")
+        if res["dropped"]:
+            one = res["dropped"] == 1
+            typer.echo(f"Removed {res['dropped']} company "
+                       f"file{'' if one else 's'} left over from an earlier "
+                       f"publish: no watched company answers to "
+                       f"{'that symbol' if one else 'those symbols'} now.")
     typer.echo(f"To export only what comes next, later: "
                f"ledgerline publish --since-seq {max_seq}")
 

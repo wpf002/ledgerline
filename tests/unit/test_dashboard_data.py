@@ -411,3 +411,67 @@ def test_publishing_assesses_nothing(isolated_db, tmp_path, monkeypatch):
     monkeypatch.setattr(edgar, "fetch", refuse)
     pages = published(tmp_path)
     assert pages["watchlist"]["n_companies"] == 1
+
+
+def test_assigning_names_a_company_that_is_not_watched_and_still_places_the_rest(
+        isolated_db):
+    """A grouping command is bulk, so it reports per ticker: one unknown
+    symbol names itself and does not cost the caller the companies that were
+    fine. Grouping never adds to the watchlist either -- a typo that quietly
+    started watching a company would spend filing history on it."""
+    watch([("0000000001", "AAA", "A Inc", None),
+           ("0000000002", "BBB", "B Inc", None)])
+    res = runner.invoke(cli.app, ["groups", "--assign", "semis",
+                                  "--tickers", "AAA,ZZNOPE,BBB"])
+    assert res.exit_code == 1                      # the unknown ticker is news
+    assert "ZZNOPE is not on your watchlist" in res.stdout
+    assert sorted(groups.members("semis")) == ["0000000001", "0000000002"]
+    assert sorted(edgar.universe()) == ["0000000001", "0000000002"]
+
+
+def test_assigning_the_same_company_twice_leaves_it_in_the_group_once(
+        isolated_db):
+    """Re-running an assignment is how a person fixes a half-finished one, so
+    it has to be safe to repeat. A second membership row would double every
+    count the watchlist page and the groups listing show."""
+    watch([("0000000001", "AAA", "A Inc", None)])
+    groups.assign("semis", ["0000000001"])
+    groups.assign("semis", ["0000000001"])
+    assert groups.members("semis") == ["0000000001"]
+    assert groups.listing()[0]["n"] == 1
+
+
+def test_unassigning_empties_a_group_without_deleting_it(isolated_db):
+    """Taking the last company out leaves a group that exists and is empty --
+    the state `members()` returns [] for. Removing the group as a side effect
+    of removing its last member would turn the next `--group` filter into
+    'there is no group called that', which is a typo's error message shown for
+    something the person did on purpose."""
+    watch([("0000000001", "AAA", "A Inc", None)])
+    groups.assign("semis", ["0000000001"])
+    groups.unassign("semis", ["0000000001"])
+    assert groups.members("semis") == []
+    assert sorted(edgar.universe()) == ["0000000001"]
+
+
+def test_publish_removes_a_company_file_no_company_answers_to_anymore(
+        isolated_db, tmp_path):
+    """Publishing rewrites a file per watched company and used to leave every
+    earlier one in place. The service serves whatever it finds, so a company
+    that changed ticker kept answering under the old symbol, carrying the same
+    'published on <date>' footer as the live pages with nothing on it to say
+    the assessment would never be refreshed again."""
+    watch([("0000000001", "TEST", "T Inc", None)])
+    emit_one_of_each()
+    published(tmp_path)
+    stale = tmp_path / "feed" / "companies" / "OLDSYM.json"
+    stale.write_text('{"ticker": "OLDSYM"}\n')
+    mine = tmp_path / "feed" / "companies" / "notes.txt"
+    mine.write_text("something a person put here\n")
+
+    res = views.write_all(str(tmp_path / "feed"))
+
+    assert res["dropped"] == 1
+    assert not stale.exists()
+    assert (tmp_path / "feed" / "companies" / "TEST.json").exists()
+    assert mine.exists()  # only the files publish itself writes are swept

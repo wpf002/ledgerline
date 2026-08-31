@@ -251,6 +251,15 @@ const ASSESSABLE_OPTIONS = [
   ["unknown", "not checked yet"],
 ];
 
+// The same three states said as modifiers of "companies", for the sentence
+// that restates a filter which matched nothing. The dropdown labels answer
+// "which ones?"; these have to survive being read mid-sentence.
+const ASSESSABLE_PHRASE = {
+  yes: "that can be assessed",
+  no: "that cannot be assessed",
+  unknown: "not checked yet",
+};
+
 function filters(data, f) {
   const groupOpts = ['<option value="">every group</option>'].concat(
     (data.groups || []).map((g) =>
@@ -299,20 +308,29 @@ function emptyExplanation(data, f) {
     `Put companies in it: <code>ledgerline groups --assign ${esc(grp.name)} ` +
     "--tickers NVDA,AMD</code>."];
   }
-  const bits = [];
-  if (f.q) bits.push(`matching “${esc(f.q)}”`);
+  // The filter is restated as one noun phrase hanging off a single head noun,
+  // and the count is reported separately from it. Joining the filters as
+  // predicates of "companies are ..." produced "companies are that cannot be
+  // assessed", and for the assessability filters it also said the opposite of
+  // what happened: "none of your companies cannot be assessed" claims they can
+  // all be assessed, when the real reason for the empty table is that nobody
+  // has run `check` and every one of them is still unknown.
+  const bits = ["companies"];
+  if (f.assessable) bits.push(ASSESSABLE_PHRASE[f.assessable]);
   if (f.group) bits.push(`in the group “${esc(f.group)}”`);
-  if (f.assessable) {
-    bits.push(ASSESSABLE_OPTIONS.find(([v]) => v === f.assessable)[1] === "any"
-      ? "" : `that ${ASSESSABLE_OPTIONS.find(([v]) => v === f.assessable)[1]}`);
-  }
-  const out = [`None of your ${num(data.companies.length)} watched companies ` +
-    `are ${bits.filter(Boolean).join(", ")}.`];
-  if (f.assessable === "yes") {
+  if (f.q) bits.push(`with “${esc(f.q)}” in the ticker or name`);
+  const out = ["Nothing matched.",
+    `You asked for ${bits.join(" ")}. None of your ` +
+    `${num(data.companies.length)} watched companies fit.`];
+  if (f.assessable === "yes" || f.assessable === "no") {
     out.push("Assessability is recorded by <code>ledgerline check</code>; " +
-      "nothing here has been checked until that has run.");
+      "until that has run a company is neither — it is not checked yet.");
   }
-  if (f.assessable === "unknown") {
+  // Only sound when assessability is the ONLY thing narrowing the table.
+  // Alongside a search box that matched nothing, "every watched company has
+  // been checked" is a claim about the whole watchlist drawn from a result
+  // that says nothing about it -- and on this machine it is false.
+  if (f.assessable === "unknown" && !f.q && !f.group) {
     out.push("Every watched company has been checked. Try " +
       '<a href="/watchlist?assessable=no">the ones that cannot be assessed</a>.');
   }

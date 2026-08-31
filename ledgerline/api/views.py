@@ -542,6 +542,33 @@ def _write(path: str, payload: dict) -> str:
     return path
 
 
+def _sweep_company_files(dir_path: str, keep: set[str]) -> int:
+    """Delete company files this directory holds for companies not in `keep`.
+
+    Publishing rewrites a file per watched company, which leaves any file from
+    an EARLIER publish in place -- and the service serves whatever it finds, so
+    a company that has since changed ticker keeps answering under the old
+    symbol with an assessment nothing will ever refresh. A stale page is worse
+    than a missing one here: it carries the same "published on <date>" footer
+    as the live ones and there is nothing on it to say otherwise.
+
+    Deliberately narrow: only *.json directly inside the companies/ directory
+    that publish itself writes, and only names shaped like the tickers it
+    writes. Anything else a person put here is theirs.
+    """
+    if not os.path.isdir(dir_path):
+        return 0
+    removed = 0
+    for name in os.listdir(dir_path):
+        if not name.endswith(".json") or name[:-5] in keep:
+            continue
+        path = os.path.join(dir_path, name)
+        if os.path.isfile(path):
+            os.remove(path)
+            removed += 1
+    return removed
+
+
 def write_all(out_dir: str | None = None, companies: bool = True) -> dict:
     """Write watchlist.json, runs.json and companies/<TICKER>.json.
 
@@ -557,6 +584,7 @@ def write_all(out_dir: str | None = None, companies: bool = True) -> dict:
         job_log = runs()
         _write(os.path.join(out_dir, "runs.json"), job_log)
         written = 0
+        dropped = 0
         if companies:
             for c in wl["companies"]:
                 if not c["ticker"]:
@@ -564,7 +592,10 @@ def write_all(out_dir: str | None = None, companies: bool = True) -> dict:
                 _write(os.path.join(out_dir, "companies", f"{c['ticker']}.json"),
                        company(c["ticker"], conn=conn))
                 written += 1
+            dropped = _sweep_company_files(
+                os.path.join(out_dir, "companies"),
+                {c["ticker"] for c in wl["companies"] if c["ticker"]})
     finally:
         conn.close()
-    return {"dir": out_dir, "companies": written,
+    return {"dir": out_dir, "companies": written, "dropped": dropped,
             "watched": wl["n_companies"], "runs": len(job_log["runs"])}

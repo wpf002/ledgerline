@@ -145,15 +145,25 @@ def statement() -> str:
 # ------------------------------------------------------- the verdict, first
 
 
-@pytest.mark.parametrize("path", PAGES)
-def test_the_verdict_is_the_first_thing_on_every_page(site, path):
+@pytest.mark.parametrize("path,expect", [(p, 200) for p in PAGES] + [
+    # The pages that render something OTHER than a table of results. Each is a
+    # separate branch, and the verdict is not a property of the happy path: a
+    # page that has no companies to show is still a page about this detector.
+    ("/company", 200),                       # the lookup form, nothing chosen
+    ("/company/ZZNOPE", 404),                # a ticker nobody watches
+    ("/company/one/two", 404),               # not a company address at all
+    ("/watchlist?group=semi", 200),          # a group name nobody created
+    ("/watchlist?group=empty-group", 200),   # a group nobody has filled in
+    ("/watchlist?q=ZZNOPE", 200),            # a search that matched nothing
+])
+def test_the_verdict_is_the_first_thing_on_every_page(site, path, expect):
     """The banner renders ahead of the masthead, the navigation and the page's
     own content, on every route. The page this replaced fetched /digest and
     painted the banner from JavaScript: until the fetch returned it read
     "LOADING…", and with scripting off it never said anything at all -- while
     still being a page about scores from a detector that failed its own test."""
     status, _, body = site.request(path)
-    assert status == 200
+    assert status == expect
     head, _, rest = body.partition("<body>")
     assert "<body>" not in head
     at = rest.index("failed its own pre-registered test")
@@ -308,3 +318,34 @@ def test_the_pages_answer_at_one_canonical_address(site):
         "/watchlist", host=f"127.0.0.1:{site.port}")
     assert status == 301
     assert headers["Location"] == f"http://localhost:{site.port}/watchlist"
+
+
+def test_a_filter_that_matched_nothing_restates_itself_as_a_sentence(site):
+    """The filters were joined as predicates of "companies are ...", which
+    produced "companies are that cannot be assessed" for the assessability
+    ones and "are matching X" for the search box. Every combination has to
+    read as English, because this paragraph is the only thing on the page
+    telling a person which of their filters emptied the table."""
+    both = site.body("/watchlist?q=ZZNOPE&assessable=yes&group=semis")
+    assert "companies that can be assessed in the group “semis” with " \
+           "“ZZNOPE” in the ticker or name" in both
+    assert "None of your" in both and " are that" not in both
+    assert "are matching" not in site.body("/watchlist?q=ZZNOPE")
+
+
+def test_an_empty_assessability_filter_never_claims_the_opposite_state(site):
+    """Nothing here has been checked, so "cannot be assessed" matches nothing.
+    Reporting that as "none of your companies cannot be assessed" states that
+    they all can -- the inverse of what is known -- and saying "every watched
+    company has been checked" beside a search box that matched nothing draws a
+    claim about the whole watchlist from a result about one query."""
+    body = site.body("/watchlist?assessable=no")
+    assert "You asked for companies that cannot be assessed." in body
+    assert "None of your 2 watched companies fit." in body
+    # The reading that would be wrong: the empty table is about the filter,
+    # not a finding that every watched company can be assessed.
+    assert "companies cannot be assessed" not in body
+    assert "until that has run a company is neither" in body
+
+    narrowed = site.body("/watchlist?assessable=unknown&q=ZZNOPE")
+    assert "Every watched company has been checked" not in narrowed

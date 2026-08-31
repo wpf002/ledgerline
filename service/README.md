@@ -9,9 +9,12 @@ node server.mjs
 There is no install step. The server uses only Node's built-in modules
 (`node:http`, `node:fs`, `node:path`, `node:url`) plus its own `pages.mjs` —
 no package.json, no npm dependencies, no node_modules, no CDN link, no build
-step. It binds `127.0.0.1:8787` (loopback only) and reads what `ledgerline
-publish` wrote under `reports/feed/`: the JSONL signal feed, plus
-`watchlist.json`, `runs.json` and `companies/TICKER.json`.
+step. It listens on both loopback literals — `127.0.0.1:8787` and
+`[::1]:8787`, never off the machine — and redirects either of them to the one
+canonical address, **http://localhost:8787**, so the address bar always reads
+the same way. It reads what `ledgerline publish` wrote under `reports/feed/`:
+the JSONL signal feed, plus `watchlist.json`, `runs.json` and
+`companies/TICKER.json`.
 
 Four pages, and the JSON routes they sit beside:
 
@@ -19,6 +22,7 @@ Four pages, and the JSON routes they sit beside:
 | ------------------- | -------------------------------------------------------------- |
 | `/`                 | the latest run: coverage, the chance-alone expectation, fires   |
 | `/watchlist`        | every watched company; filter by group, assessability, ticker   |
+| `/company`          | the company lookup form; `?ticker=` redirects to the path below |
 | `/company/:ticker`  | one company: the plain reading, the thirteen measures, the filings behind each number, revisions, the provenance trail |
 | `/activity`         | the run log: when, what it cost, what it found, what it could not assess |
 | `/style.css`        | the one stylesheet all four pages link                          |
@@ -26,6 +30,9 @@ Four pages, and the JSON routes they sit beside:
 | `/signals/:ticker`  | one company's records                                          |
 | `/validation`       | the validation block alone                                     |
 | `/digest`           | the latest run as JSON                                          |
+
+Anything else is a 404 carrying the route list; anything that is not a GET is
+a 405. Both answer with the validation block, like every other response.
 
 The pages are rendered on the server. That is not a preference: **the verdict
 banner is the first thing in the body of every page**, and a banner painted by

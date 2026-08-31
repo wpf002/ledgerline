@@ -444,6 +444,48 @@ CREATE TABLE IF NOT EXISTS track_record (
     payload          TEXT,               -- the full JSON, re-readable later
     PRIMARY KEY (gate_version, horizon_q, computed_at)
 );
+
+-- Survivorship-free filer registry from the SEC quarterly full-index, which
+-- is point-in-time by construction: a company that filed in 2015Q1 is in the
+-- 2015Q1 index whether or not it exists today. scripts/sp1500.py reads
+-- CURRENT membership, so every filer delisted, acquired or bankrupted before
+-- today is absent -- measured: 8,021 periodic filers in 2011Q1, 6,190 in
+-- 2024Q1, only 2,629 in both. Distinct from `filings`, which is a live-run
+-- log for the CURRENT universe and cannot answer a historical question about
+-- filers not in it. Writer: ledgerline/fullindex.py; a quarter is replaced
+-- wholesale on re-ingest, so a re-opened quarter cannot half-update.
+CREATE TABLE IF NOT EXISTS filer_registry (
+    cik        TEXT,
+    quarter    TEXT,                     -- YYYYQn
+    form       TEXT,
+    filed      TEXT,
+    accession  TEXT,
+    name       TEXT,
+    PRIMARY KEY (cik, quarter, accession)
+);
+CREATE INDEX IF NOT EXISTS filer_registry_quarter ON filer_registry (quarter);
+
+-- Cost per run measured, not modelled. Tier 0 IS flat (one daily-index
+-- request, independent of N); the RUN is not (1 + K(N) requests, K linear in
+-- N -- periodic forms measured at median 7/day, p90 97/day, max 201/day at
+-- N=1,498). ROADMAP 10 gates scaling on this claim being verified, and a
+-- verification that lives only in a printed table cannot be re-checked
+-- later. Writer: ledgerline/cost.py, replaying filer_registry arrivals;
+-- percentile-day figures, never means, because filing arrival is clustered
+-- ~29x between the median day and the peak.
+CREATE TABLE IF NOT EXISTS cost_samples (
+    sample_id     TEXT PRIMARY KEY,
+    measured_at   TEXT NOT NULL,
+    mode          TEXT NOT NULL,         -- replay | observed
+    universe_size INTEGER NOT NULL,
+    day           TEXT,
+    index_rows    INTEGER,
+    universe_hits INTEGER,
+    requests      INTEGER,
+    bytes_fetched INTEGER,
+    seconds       REAL,
+    note          TEXT
+);
 """
 
 # Migrations, ordered and carried on PRAGMA user_version. CREATE TABLE IF NOT

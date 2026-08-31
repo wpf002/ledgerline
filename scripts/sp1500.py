@@ -9,6 +9,16 @@ Note this is CURRENT membership, i.e. survivorship-biased at the index level:
 names deleted from the index before today are absent. That biases the CONTROL
 group optimistic (deleted names skew toward deterioration). Recorded here so the
 Phase 0 write-up states it rather than discovers it.
+
+SUPERSEDED for universe construction by ledgerline/fullindex.py, which reads
+the SEC's own quarterly full-index -- point-in-time by construction, so
+delisted filers stay visible. Measured with that registry, the bias this
+docstring could only name now has a magnitude: 67% of the companies filing
+periodic reports in 2011Q1 had stopped filing by 2024Q1, none of them visible
+to this scrape. Kept anyway, not deleted: the Phase 0 case set and the
+committed split were built from this exact ticker list, so this script is the
+provenance of a committed artifact, and deleting it would make the split
+unauditable.
 """
 from __future__ import annotations
 

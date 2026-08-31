@@ -33,6 +33,12 @@ Records:
                                          filings that will decide them
     ledgerline track                     how past assessments turned out, next
                                          to the failed test's own numbers
+    ledgerline registry                  every company that has filed routine
+                                         reports with the SEC since 2011,
+                                         survivors and casualties alike
+    ledgerline cost                      what a daily check would cost at
+                                         larger watchlist sizes, replayed
+                                         against the real filing calendar
 
 Research (the validation experiment; most are one-shot):
     build-cases, periods, split, commit-rule, calibrate, run-test,
@@ -53,8 +59,9 @@ from datetime import date
 
 import typer
 
-from . import backtest, edgar, emit, ingest, render, restate, signals_v3
+from . import backtest, edgar, emit, fullindex, ingest, render, restate, signals_v3
 from . import calibrate as calib
+from . import cost as cost_mod
 from . import coverage as cov
 from . import peers as peer_mod
 from . import provenance as prov
@@ -1214,6 +1221,158 @@ def retest_status():
     typer.echo("The floor any revision must beat is the failed 2026-08-30 "
                "result: 28.7% caught (needed at least 60%). A floor, not a "
                "grade -- beating it proves improvement, not success.")
+
+
+# ------------------------------------------------------- registry and cost
+
+
+def _mb(n: float | int | None) -> str:
+    return "unknown" if n is None else f"{n / 1_000_000:,.0f} MB"
+
+
+@app.command()
+def registry(from_year: int = typer.Option(2011, help="First year of SEC "
+                                           "quarterly indexes to read. Before "
+                                           "2011 there is no machine-readable "
+                                           "data to assess anyway."),
+             to_year: int = typer.Option(None, help="Last year to read; "
+                                         "defaults to the current one."),
+             gap: bool = typer.Option(False, "--gap",
+                                      help="Just measure how many past filers "
+                                           "the current watchlist misses. "
+                                           "Reads local data only."),
+             refresh: bool = typer.Option(False, help="Re-download quarters "
+                                          "already ingested.")):
+    """Every company that filed a routine report (10-K, 10-Q, 20-F) with the
+    SEC since 2011 -- including the ones that later delisted, were bought, or
+    went under, which a list of today's companies cannot show.
+
+    Built from the SEC's own quarterly filing indexes: four downloads a year,
+    no licence, and each quarter shows the companies that existed THEN. One
+    full build is ~60 quarters at ~50 MB each; already-ingested quarters are
+    skipped, so a rerun only fetches what is new.
+    """
+    typer.echo(phase0.banner())
+    typer.echo("")
+    if gap:
+        measured = fullindex.survivorship_gap()
+        if not measured["registry_filers"]:
+            typer.echo("The filer registry is empty, so there is no gap to "
+                       "measure yet. Build it first:")
+            typer.echo("  ledgerline registry")
+            raise typer.Exit(1)
+        share = measured["missing_share"] or 0.0
+        typer.echo(f"The SEC's quarterly indexes list "
+                   f"{measured['registry_filers']:,} companies that have filed "
+                   "routine reports since 2011.")
+        typer.echo(f"Of those, {measured['watched_in_registry']:,} are on the "
+                   f"current watchlist and {measured['missing_from_watchlist']:,} "
+                   f"({share:.0%}) are not -- mostly companies that were "
+                   "delisted, acquired, or went under.")
+        years = measured["missing_by_last_filing_year"]
+        if years:
+            typer.echo("When the missing companies last filed:")
+            for year, count in years.items():
+                typer.echo(f"  {year}: {count:,}")
+        typer.echo("")
+        # The most tempting number in the project, so the caution prints with
+        # it every time, not just in a report nobody rereads.
+        typer.echo("A note on what this gap does NOT mean: the missing "
+                   "companies are where deterioration actually ends, so the "
+                   "failed test's 28.7% was plausibly measured against an "
+                   "unflattering sample. That is recorded as a measurement "
+                   "only. The 2026-08-30 test cannot be re-run on these "
+                   "companies -- a fair re-test needs a new case set, a new "
+                   "split, and a new pre-registered rule, committed before "
+                   "any scoring.")
+        return
+    end_q = f"{to_year}Q4" if to_year else fullindex.current_quarter()
+
+    def progress(quarter: str, rows: int | None) -> None:
+        if rows is None:
+            typer.echo(f"  {quarter}: could not be downloaded (skipped; a "
+                       "rerun will retry it)")
+        else:
+            typer.echo(f"  {quarter}: {rows:,} routine filings recorded")
+
+    try:
+        summary = fullindex.ingest(start=f"{from_year}Q1", end=end_q,
+                                   refresh=refresh, progress=progress)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    if summary["skipped"]:
+        typer.echo(f"  ({summary['skipped']} quarter"
+                   f"{'s' if summary['skipped'] != 1 else ''} already "
+                   "ingested, skipped)")
+    filers = len(fullindex.registry())
+    typer.echo(f"Registry now covers {filers:,} distinct companies. See how "
+               "many the watchlist misses:")
+    typer.echo("  ledgerline registry --gap")
+
+
+@app.command()
+def cost(sizes: str = typer.Option("100,500,1500,3000",
+                                   help="Watchlist sizes to project, "
+                                        "comma-separated."),
+         window: str = typer.Option("2023-01-01:2025-12-31",
+                                    help="Historical span to replay, "
+                                         "START:END dates."),
+         live: bool = typer.Option(False, "--live",
+                                   help="Refused. See the command's output "
+                                        "for why.")):
+    """What the daily check would cost at larger watchlist sizes -- replayed
+    against the real filing calendar, using only data already on this machine.
+
+    Two different answers, reported separately because they disagree: the
+    market-wide change check stays ONE download a day at any size, while the
+    per-company refresh work grows in step with the watchlist. Writes the full
+    measurement to reports/cost.json and books it in the database.
+    """
+    if live:
+        # Cut deliberately, not deferred: a live measurement at 3,000
+        # companies is ~400 downloads and ~1.4 GB from the SEC on a peak day,
+        # spent confirming arithmetic the replay already does offline. The
+        # meter on real runs (ledgerline runs) is the live ground truth.
+        typer.echo("A live cost measurement is refused: it would spend "
+                   "hundreds of real SEC downloads to confirm arithmetic the "
+                   "replay does offline. Every real run already meters its "
+                   "own downloads and bytes -- see them with:")
+        typer.echo("  ledgerline runs")
+        raise typer.Exit(1)
+    typer.echo(phase0.banner())
+    typer.echo("")
+    start, _, end = window.partition(":")
+    try:
+        payload = cost_mod.measure_scaling(
+            [int(s) for s in sizes.split(",")], start, end)
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    consts = payload["constants"]
+    typer.echo(f"Replaying the real filing calendar from {start} to {end}, "
+               f"with per-company sizes measured from {consts['n_sampled']} "
+               "already-downloaded companies:")
+    typer.echo("")
+    for size, entry in payload["sizes"].items():
+        t1 = entry["tier1_requests_per_day"]
+        by = entry["bytes_per_day"]
+        typer.echo(f"  Watching {int(size):,} companies "
+                   f"(sample of {entry['n_filers']:,}):")
+        typer.echo("    market-wide check: still one download a day, at any "
+                   "size")
+        typer.echo(f"    refreshes: {t1['median']:.0f} companies on a typical "
+                   f"day ({_mb(by['median'])}), {t1['p90']:.0f} on a busy day "
+                   f"({_mb(by['p90'])}), {t1['max']:.0f} at the worst "
+                   f"({_mb(by['max'])})")
+        typer.echo(f"    disk for their filing histories: about "
+                   f"{_mb(entry['disk_bytes_projected'])}")
+    typer.echo("")
+    typer.echo("The daily check stays flat as the watchlist grows; the "
+               "refresh work does not -- it grows in step with it. "
+               + payload["bias"])
+    cost_mod.persist_samples(payload)
+    typer.echo(f"Full measurement written to {cost_mod.report(payload)}")
 
 
 # -------------------------------------------------- old names, kept working

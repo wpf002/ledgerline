@@ -26,13 +26,25 @@ Four pages, and the JSON routes they sit beside:
 | `/company/:ticker`  | one company: the plain reading, the thirteen measures, the filings behind each number, revisions, the provenance trail |
 | `/activity`         | the run log: when, what it cost, what it found, what it could not assess |
 | `/style.css`        | the one stylesheet all four pages link                          |
-| `/signals`          | the feed, cursor-paged (`?since_seq=&limit=`)                  |
+| `/signals`          | the feed, cursor-paged (`?since_seq=0&limit=100`), at most 1,000 records a page |
 | `/signals/:ticker`  | one company's records                                          |
 | `/validation`       | the validation block alone                                     |
 | `/digest`           | the latest run as JSON                                          |
 
 Anything else is a 404 carrying the route list; anything that is not a GET is
-a 405. Both answer with the validation block, like every other response.
+a 405, whichever loopback spelling it was addressed to. `since_seq` and
+`limit` must be whole numbers, or the answer is a 400 naming the one that was
+not — a non-numeric cursor used to return an empty page and a `next_seq` of
+`null`, which reads exactly like "you are caught up" on a feed of 39,564
+records. `limit` is capped at 1,000 records a page; `page_limit` in the
+response says what was actually applied, and `next_seq` pages on from there.
+All of them answer with the validation block, like every other response.
+
+Nothing a request can contain ends the process. A malformed percent-escape, a
+published file with a key of the wrong type, a feed record carrying the
+verdict sentence without the numbers under it — each is answered with a page
+or a body saying what happened and what to run. A read service that exits on a
+bad file takes every other route down with it.
 
 The pages are rendered on the server. That is not a preference: **the verdict
 banner is the first thing in the body of every page**, and a banner painted by

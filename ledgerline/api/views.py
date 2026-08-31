@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from datetime import date
 
@@ -53,6 +54,16 @@ RUNS_LIMIT = 500
 # has a few hundred filings; the cap is a page-size guard, and the file says
 # when it truncated rather than silently showing a partial record as complete.
 TIMELINE_LIMIT = 400
+
+# What may become the name of a file under companies/. The same pattern the
+# read service matches path segments against (service/server.mjs), applied at
+# the end that CREATES the files, because the ticker column of an imported
+# watchlist CSV is text from somewhere else: `..` is a ticker-shaped string,
+# and `../../../pwned` was accepted onto the watchlist, joined to the feed
+# directory, and written -- a file outside the feed tree entirely, with a
+# fully controlled name, while publish reported full success. The read side has
+# matched rather than trusted from the start; this is the writer catching up.
+TICKER_FILENAME = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,11}$")
 
 
 def _plain_flags(flags: list[dict] | None) -> list[str]:
@@ -273,6 +284,14 @@ def watchlist(conn: sqlite3.Connection | None = None) -> dict:
         "generated": date.today().isoformat(),
         "n_companies": len(companies),
         "n_assessable": sum(1 for c in companies if c["assessable"]),
+        # `assessable` is tri-state, and n_assessable counts only True, so zero
+        # means either "nobody has run check" or "check ran and nothing
+        # cleared the gate". The page above the rows read that zero as the
+        # first one and told the reader to run the command whose result it was
+        # reporting -- the same collapse _quality() exists to prevent one row
+        # down, where the four reasons a row is empty are four pieces of news.
+        # runs() already takes this care with its own counts.
+        "n_checked": sum(1 for c in companies if c["assessable"] is not None),
         "n_flagged": sum(1 for c in companies
                          if (c["latest"] or {}).get("flagged")),
         "groups": group_list,
@@ -318,6 +337,29 @@ def runs(limit: int = RUNS_LIMIT) -> dict:
     }
 
 
+def _form_of(claims: list[tuple[str | None, str | None, str | None]],
+             filed: str | None) -> str | None:
+    """Which form this accession is, out of what the figures citing it claim.
+
+    A figure read straight off a filing carries that filing's own form and
+    date; a figure worked out from two filings carries the form and date of the
+    one it was anchored to, which for the OTHER accession it cites is somebody
+    else's form. So the claims made on the accession's own filing date come
+    first, and among those the reported ones -- read directly, from that
+    document -- come before the derived and summed ones. Ordering rather than
+    filtering, because a backfilled database can hold nothing but derived rows
+    for an accession, and a form off by one is still better than no form.
+    """
+    def rank(claim: tuple[str | None, str | None, str | None]) -> tuple:
+        row_filed, origin, _ = claim
+        return (0 if filed and row_filed == filed else 1,
+                0 if origin == "reported" else 1,
+                row_filed or "9999-99-99")
+
+    named = [c for c in claims if c[2]]
+    return min(named, key=rank)[2] if named else None
+
+
 def filing_timeline(cik: str, conn: sqlite3.Connection,
                     limit: int = TIMELINE_LIMIT) -> list[dict]:
     """The filings this company's numbers actually came from, newest first.
@@ -339,34 +381,50 @@ def filing_timeline(cik: str, conn: sqlite3.Connection,
     """
     by_acc: dict[str, dict] = {}
     for table in ("metrics", "vintages"):
-        for filed, form, end, sources in conn.execute(
-                f"SELECT filed, form, end_date, sources FROM {table} "
+        for filed, form, end, origin, sources in conn.execute(
+                f"SELECT filed, form, end_date, origin, sources FROM {table} "
                 "WHERE cik = ?", (cik,)).fetchall():
             for acc in (json.loads(sources) if sources else []):
                 if not acc:
                     continue
                 hit = by_acc.setdefault(
-                    acc, {"accession": acc, "form": form, "filed": filed,
-                          "periods": set()})
+                    acc, {"accession": acc, "form": None, "filed": filed,
+                          "claims": [], "periods": set()})
                 # One accession, one filing date: keep the earliest seen,
                 # since a later vintage of the same filing is the same
                 # document filed once.
                 if filed and (hit["filed"] is None or filed < hit["filed"]):
                     hit["filed"] = filed
+                # The form is a claim to be resolved beside `filed`, not the
+                # first one the scan happened to return. A derived quarter
+                # (Q4 = FY - 9M) cites both of its inputs and carries only the
+                # cumulative's form and filing date, so the 10-Q accession that
+                # supplied the 9M figure inherited "10-K" from it, while
+                # `filed` was pulled back to the true earliest date by the
+                # min() above -- a form-and-date pair that never existed,
+                # pointing a reader at a document the company never filed.
+                hit["claims"].append((filed, origin, form))
                 if end:
                     hit["periods"].add(end)
     for acc, form, filing_date, period in conn.execute(
             "SELECT accession, form, filing_date, period FROM filings "
             "WHERE cik = ?", (cik,)).fetchall():
         hit = by_acc.setdefault(
-            acc, {"accession": acc, "form": form, "filed": filing_date,
-                  "periods": set()})
+            acc, {"accession": acc, "form": None, "filed": filing_date,
+                  "claims": [], "periods": set()})
+        # The filings table is the SEC index's own answer for this accession:
+        # the document's form, not a figure's memory of it. Where it has one it
+        # settles the question.
+        if form:
+            hit["form"] = form
         if period:
             hit["periods"].add(period)
 
     out = []
     for hit in by_acc.values():
         periods = sorted(hit["periods"])
+        if hit["form"] is None:
+            hit["form"] = _form_of(hit["claims"], hit["filed"])
         # A filing is cited by more periods than it reported: a quarter worked
         # out by subtracting one year-to-date report from another cites BOTH
         # filings, so the newest period citing a filing can end months after
@@ -441,7 +499,15 @@ def _trail(verdict: dict) -> dict:
             ],
         })
     return {
-        "label": verdict.get("provenance_label"),
+        # No trail resolved, no label. Verdict.provenance_label carries a
+        # dataclass default of "TRACED", and every early return in evaluate()
+        # -- the five ways a filer is declared unassessable -- leaves it there
+        # untouched, because provenance.reading_trace() only runs on the
+        # scoreable path. Copying it verbatim published a traceability
+        # guarantee for a reading nobody traced, on companies where no measure
+        # was evaluated at all. An empty `provenance` is exactly the case where
+        # reading_trace() never ran, so it is the case where this says nothing.
+        "label": verdict.get("provenance_label") if prov else None,
         "derived_fraction": prov.get("derived_fraction"),
         "derived_fraction_high": bool(prov.get("derived_fraction_high")),
         "measures": measures,
@@ -543,12 +609,28 @@ def company(ticker: str, conn: sqlite3.Connection | None = None,
 # --------------------------------------------------------------- writing out
 
 
-def _write(path: str, payload: dict) -> str:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w") as fh:
+def _write(path: str, payload: dict, inside: str | None = None) -> str:
+    """Write one published file, and refuse to write it anywhere else.
+
+    `inside` is the directory the path is claimed to be under, checked after
+    resolution rather than before: os.path.join is happy to build
+    `<feed>/companies/../../../pwned.json`, and the makedirs below normalises
+    the "../" away and CREATES whatever directory it lands in, so the helper
+    was making its own traversal target writable. Resolving first and asking
+    where the path actually is closes it.
+    """
+    target = os.path.realpath(path)
+    if inside is not None:
+        root = os.path.realpath(inside)
+        if os.path.commonpath([root, target]) != root:
+            raise ValueError(
+                f"refusing to publish outside {root}: {path} resolves to "
+                f"{target}")
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w") as fh:
         json.dump(payload, fh, indent=2, sort_keys=True)
         fh.write("\n")
-    return path
+    return target
 
 
 def _sweep_company_files(dir_path: str, keep: set[str]) -> int:
@@ -584,27 +666,42 @@ def write_all(out_dir: str | None = None, companies: bool = True) -> dict:
     One connection for the whole job: the per-company files are ~1,500 small
     reads against the same database, and reopening it per company is the shape
     of loop that turns a fast publish into a slow one.
+
+    A ticker that cannot be a filename gets no file and is named in the result
+    instead. The watchlist takes its tickers from a CSV a person exported from
+    somewhere else, so the column is untrusted text by design; a publish that
+    turned it into a path was a file write anywhere the user can write, and it
+    reported success while doing it. Skipping is the right answer rather than
+    failing the whole publish: one unusable row should not cost the other 1,497
+    companies their pages, and the row is reported so it can be fixed.
     """
     out_dir = out_dir or FEED_DIR
+    company_dir = os.path.join(out_dir, "companies")
     conn = edgar.db()
     try:
         wl = watchlist(conn=conn)
-        _write(os.path.join(out_dir, "watchlist.json"), wl)
+        _write(os.path.join(out_dir, "watchlist.json"), wl, inside=out_dir)
         job_log = runs()
-        _write(os.path.join(out_dir, "runs.json"), job_log)
+        _write(os.path.join(out_dir, "runs.json"), job_log, inside=out_dir)
         written = 0
         dropped = 0
+        refused: list[str] = []
         if companies:
             for c in wl["companies"]:
-                if not c["ticker"]:
+                tick = c["ticker"]
+                if not tick:
                     continue
-                _write(os.path.join(out_dir, "companies", f"{c['ticker']}.json"),
-                       company(c["ticker"], conn=conn))
+                if not TICKER_FILENAME.match(tick):
+                    refused.append(tick)
+                    continue
+                _write(os.path.join(company_dir, f"{tick}.json"),
+                       company(tick, conn=conn), inside=company_dir)
                 written += 1
             dropped = _sweep_company_files(
-                os.path.join(out_dir, "companies"),
+                company_dir,
                 {c["ticker"] for c in wl["companies"] if c["ticker"]})
     finally:
         conn.close()
     return {"dir": out_dir, "companies": written, "dropped": dropped,
+            "refused": refused,
             "watched": wl["n_companies"], "runs": len(job_log["runs"])}

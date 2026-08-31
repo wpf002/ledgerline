@@ -14,7 +14,13 @@ Each test pins one decision or defect:
     no evidence of it;
   * publishing reads what was saved and assesses nothing, and the browser is
     handed the same plain-language text the CLI prints rather than a second
-    implementation of it.
+    implementation of it;
+  * publishing writes inside the feed directory and nowhere else -- the ticker
+    a company file is named after comes from an imported spreadsheet, which is
+    untrusted text;
+  * a published number keeps the provenance it actually has: one accession is
+    shown with the form the filing carried, and "nobody checked" is never
+    reported as "checked, and none of them qualified".
 
 Same isolation idiom as test_signal_store.py: edgar.DATA / edgar.DB_PATH are
 redirected to tmp_path, so the live state.db is never touched. No network.
@@ -475,3 +481,108 @@ def test_publish_removes_a_company_file_no_company_answers_to_anymore(
     assert not stale.exists()
     assert (tmp_path / "feed" / "companies" / "TEST.json").exists()
     assert mine.exists()  # only the files publish itself writes are swept
+
+
+# ------------------------------------------- what publish is allowed to write
+
+
+def test_publish_writes_no_file_outside_the_feed_directory(isolated_db, tmp_path):
+    """The ticker column of an imported watchlist CSV is text from somewhere
+    else -- `ledgerline watch --import` is documented as reading a spreadsheet
+    exported from another tool -- and publish turned it straight into a path:
+    `os.path.join(out_dir, "companies", f"{ticker}.json")` with no check, and
+    _write's own makedirs normalised the "../" away and CREATED the directory
+    it landed in. A row spelled `../../../pwned` clobbered a file three levels
+    above the feed, while publish reported full success and swept nothing."""
+    watch([("0000000001", "TEST", "T Inc", None),
+           ("0000004242", "../../../PWNED", "Acme", None)])
+    emit_one_of_each()
+    feed = tmp_path / "feed"
+    (feed / "companies").mkdir(parents=True)
+    victim = tmp_path / "PWNED.json"
+    victim.write_text('{"important": "a file that was already here"}\n')
+
+    res = views.write_all(str(feed))
+
+    assert victim.read_text().startswith('{"important"')
+    assert res["refused"] == ["../../../PWNED"]
+    assert res["companies"] == 1
+    assert (feed / "companies" / "TEST.json").exists()
+    assert sorted(p.name for p in (feed / "companies").iterdir()) == ["TEST.json"]
+    # And the writer refuses the path even when handed one directly, because
+    # the pattern above is one guard and the resolved path is the other.
+    with pytest.raises(ValueError, match="refusing to publish outside"):
+        views._write(str(feed / "companies" / ".." / ".." / "escaped.json"),
+                     {}, inside=str(feed / "companies"))
+
+
+def test_a_publish_that_refused_a_row_says_which_one(isolated_db, tmp_path):
+    """A skipped company is news: that row is on the watchlist and will never
+    have a page. Publishing the other 1,497 is the right call, and reporting
+    nothing about the one it walked away from is not."""
+    watch([("0000004242", "../../../PWNED", "Acme", None)])
+    emit_one_of_each()
+    out = runner.invoke(cli.app, ["publish", "--out",
+                                  str(tmp_path / "feed" / "signals.jsonl")])
+    assert out.exit_code == 0
+    assert "No page was written for ../../../PWNED" in out.stdout
+    assert "not a ticker symbol" in out.stdout
+
+
+def test_the_filing_timeline_never_shows_a_form_the_filing_did_not_carry(
+        isolated_db, tmp_path):
+    """One accession, one form. The per-accession collapse took `form` from
+    whichever row the unordered scan returned first and repaired only `filed`
+    with a min(), so a derived quarter -- Q4 = FY minus 9M, which cites both
+    inputs while carrying only the cumulative's form -- gave the 10-Q accession
+    that supplied the 9M figure the 10-K's form. The row then asserted a 10-K
+    on a date the company filed a 10-Q: a document that does not exist, printed
+    beside a link to the SEC, on the table whose job is making a stored figure
+    checkable."""
+    watch([("0000000001", "TEST", "T Inc", None)])
+    acc = "0000000001-21-000113"
+    conn = edgar.db()
+    with conn:
+        # The derived row is inserted FIRST, which is what first-writer-wins
+        # picked up: it carries the annual report's form and filing date and
+        # cites both filings it was differenced from.
+        conn.execute(
+            "INSERT INTO metrics (cik, metric, end_date, kind, filed, value, "
+            "form, concept, origin, sources) VALUES "
+            "('0000000001','capex','2020-12-31','Q','2023-02-22',1.0,'10-K',"
+            "'PaymentsToAcquirePropertyPlantAndEquipment','derived',"
+            f"'[\"0000000001-23-000053\", \"{acc}\"]')")
+        # The figure actually read off the quarterly report itself.
+        conn.execute(
+            "INSERT INTO metrics (cik, metric, end_date, kind, filed, value, "
+            "form, concept, origin, sources) VALUES "
+            "('0000000001','cash','2021-09-30','PIT','2021-11-04',2.0,'10-Q',"
+            f"'CashAndCashEquivalentsAtCarryingValue','reported','[\"{acc}\"]')")
+    row = next(r for r in views.filing_timeline("0000000001", conn)
+               if r["accession"] == acc)
+    conn.close()
+    assert row["filed"] == "2021-11-04"
+    assert row["form"] == "10-Q", "the form has to be the one filed on that day"
+
+
+def test_the_watchlist_counts_checked_apart_from_assessable(isolated_db, tmp_path):
+    """`assessable` is tri-state and n_assessable counts only True, so zero
+    could not tell "nobody has run check" from "check ran and nothing cleared
+    the gate" -- and the page above the rows read it as the first, telling the
+    reader to run the command whose result it was reporting. runs() already
+    takes this care with its own counts; the watchlist did not."""
+    watch([("0000000001", "TEST", "T Inc", None)])
+    fresh = views.watchlist()
+    assert fresh["n_checked"] == 0 and fresh["n_assessable"] == 0
+
+    conn = edgar.db()
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO scoreability (cik, as_of, ticker, "
+            "scoreable, code, detail, n_evaluated, n_tracked) VALUES "
+            "('0000000001','2026-08-30','TEST',0,'SHORT_HISTORY',"
+            "'SHORT_HISTORY',1,13)")
+    checked = views.watchlist(conn=conn)
+    conn.close()
+    assert checked["n_assessable"] == 0
+    assert checked["n_checked"] == 1, "check has run; the header must not deny it"

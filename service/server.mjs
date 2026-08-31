@@ -19,6 +19,15 @@
 // that the Python did not already write -- see ledgerline/api/views.py. If
 // serving ever requires recomputing a number the Python already computed, that
 // is the signal to revisit the boundary, not to port the arithmetic.
+//
+// Nothing a request contains may end this process. A mistyped address, a
+// published file with a key of the wrong type, or a feed record missing the
+// numbers under its own verdict were each an uncaught throw inside the request
+// handler, which is to say an exit -- and one route's bad file took down every
+// other route with it, including the one that only serves the verdict. Every
+// failure here is answered instead: pages say what happened and which command
+// rewrites the file, JSON routes say the same thing in a body. The handler is
+// wrapped for the failures no route thought to catch.
 
 import http from "node:http";
 import fs from "node:fs";
@@ -46,6 +55,30 @@ const TICKER = /^[A-Z0-9][A-Z0-9.\-]{0,11}$/;
 
 let cache = { mtimeMs: -1, size: -1, records: [] };
 
+// Why this checks more than one key: the gate below used to admit a record on
+// `validation.statement` alone and digestOf then read `validation.measured
+// .fpr_per_control_quarter` off it, so a record carrying the sentence without
+// the numbers the sentence is derived from killed the process instead of being
+// refused. A loader whose job is to refuse incomplete evidence has to check
+// the evidence it is about to hand on -- every field this file reads, not the
+// first one. Mirrors ledgerline/api/schema.py, which declares `validation`
+// closed with `measured` required.
+function validationFault(v) {
+  if (!v || typeof v !== "object") return "has no validation block";
+  if (typeof v.statement !== "string" || v.statement.length === 0) {
+    return "has no validation block";
+  }
+  if (!v.measured || typeof v.measured !== "object") {
+    return "has a validation block with no measured numbers in it";
+  }
+  if (typeof v.measured.fpr_per_control_quarter !== "number" ||
+      !Number.isFinite(v.measured.fpr_per_control_quarter)) {
+    return "has a validation block whose measured false-alarm rate is not a " +
+      "number";
+  }
+  return null;
+}
+
 // The feed is append-only, so a cheap stat per request keeps the cache fresh
 // without a watcher. A line that fails to parse, or arrives without its
 // validation block, fails the WHOLE load: a feed with silently skipped lines
@@ -64,11 +97,11 @@ function loadFeed() {
     } catch {
       throw new Error(`feed line ${i + 1} is not valid JSON`);
     }
-    if (!rec.validation || typeof rec.validation.statement !== "string" ||
-        rec.validation.statement.length === 0) {
+    const wrong = validationFault(rec.validation);
+    if (wrong) {
       throw new Error(
-        `feed line ${i + 1} has no validation block -- refusing to serve a ` +
-        "score without the fact that the detector failed its own test");
+        `feed line ${i + 1} ${wrong} -- refusing to serve a score without ` +
+        "the fact that the detector failed its own test");
     }
     return rec;
   });
@@ -82,8 +115,33 @@ function loadFeed() {
 // without also holding the fact that the detector failed its test.
 const views = new Map();
 
+// Where the published files are allowed to be. `rel` is built from route
+// segments, and path.join happily walks "companies/../../.." out of the feed
+// directory, so the joined path is resolved and then checked rather than
+// trusted -- the same reason the TICKER pattern exists, applied to the result
+// instead of the input, because only the resolved path knows where it landed.
+// Symlinks are resolved where they exist so a link inside companies/ cannot
+// point somewhere this service would not otherwise read.
+function insideFeed(file) {
+  const resolve = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const root = resolve(PAGES_DIR);
+  const target = resolve(file);
+  return target === root || target.startsWith(root + path.sep);
+}
+
 function readView(rel) {
   const file = path.join(PAGES_DIR, rel);
+  if (!insideFeed(file)) {
+    return { ok: false, file, error:
+      `${rel} resolves outside the published feed directory, and this ` +
+      "service reads nothing else" };
+  }
   let stat;
   try {
     stat = fs.statSync(file);
@@ -162,6 +220,28 @@ function digestOf(records) {
         flags: r.flags.map((f) => f.code),
       })),
   };
+}
+
+// How many records one /signals page carries, and the ceiling on asking for
+// more. Why there is a ceiling at all: `?limit=1000000` served all 39,564
+// records as a single 90 MB JSON string, roughly twice the feed materialised
+// in memory before a byte was written. Paging past the ceiling is not lossy --
+// next_seq advances, so a caller that wants the whole feed gets it in pages.
+const PAGE_DEFAULT = 100;
+const PAGE_MAX = 1000;
+
+// A query parameter is text a caller typed, and Number() answers NaN for
+// "abc", -1 for "-1" and 0 for "": each of those used to produce a 200 with a
+// body a consuming program could not tell from a correct one -- an empty page
+// that reads as "you are caught up", a page short by exactly one record, a
+// cursor that silently rewound to the start. Absent or empty means "use the
+// default"; anything else has to be a whole number or the caller hears about
+// it. Returns null for "the caller sent something this cannot be".
+function wholeNumber(raw, fallback) {
+  if (raw === null || raw === undefined || raw.trim() === "") return fallback;
+  if (!/^\d+$/.test(raw.trim())) return null;
+  const n = Number(raw.trim());
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 function send(res, status, body) {
@@ -265,9 +345,24 @@ function serveCompanyIndex(res, note) {
   sendHtml(res, note ? 404 : 200, pages.companyIndex(got.data, note));
 }
 
+// A path segment is not necessarily text. `new URL()` leaves an invalid
+// percent-escape raw in the pathname, so `/company/%` reaches here as a
+// literal "%" and decodeURIComponent throws URIError on it -- which used to
+// take the whole process down from one mistyped address. An undecodable
+// segment is simply not a ticker, and says so on the page like every other
+// thing that is not one.
+function decodeOrNull(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
 function serveCompany(res, raw) {
-  const ticker = decodeURIComponent(raw).toUpperCase();
-  if (!TICKER.test(ticker)) {
+  const decoded = decodeOrNull(raw);
+  const ticker = (decoded ?? "").toUpperCase();
+  if (decoded === null || !TICKER.test(ticker)) {
     serveCompanyIndex(res, `“${pages.esc(raw)}” is not a ticker symbol. ` +
       "Try one like <code>/company/FMC</code>.");
     return;
@@ -342,7 +437,23 @@ function serveStylesheet(res) {
 
 const HTML_ROUTES = new Set(["", "watchlist", "company", "activity"]);
 
-const server = http.createServer((req, res) => {
+function handle(req, res) {
+  // Read-only by construction: the append-only invariant cannot be enforced
+  // from here, so this surface is not given the vocabulary to violate it. The
+  // verdict travels with the refusal like every other response, from whatever
+  // evidence can be read cheaply.
+  //
+  // Ahead of the canonical-host redirect below, and not after it: a 301 has no
+  // body, so a write attempt addressed to 127.0.0.1 was refused without the
+  // verdict travelling with it, and a client that follows redirects the
+  // ordinary way had its POST turned into a GET and was served the feed
+  // instead of being told the surface is read-only.
+  if (req.method !== "GET") {
+    send(res, 405, { error: "this service only reads",
+                     validation: anyValidation() });
+    return;
+  }
+
   // One canonical address. Anyone arriving via 127.0.0.1 or [::1] is sent to
   // http://localhost:8787 so the address bar always reads the same way.
   const host = String(req.headers.host ?? "");
@@ -354,16 +465,6 @@ const server = http.createServer((req, res) => {
 
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   const parts = url.pathname.split("/").filter(Boolean);
-
-  if (req.method !== "GET") {
-    // Read-only by construction: the append-only invariant cannot be
-    // enforced from here, so this surface is not given the vocabulary to
-    // violate it. The verdict travels with the refusal like every other
-    // response, from whatever evidence can be read cheaply.
-    send(res, 405, { error: "this service only reads",
-                     validation: anyValidation() });
-    return;
-  }
 
   if (parts[0] === "style.css" && parts.length === 1) {
     serveStylesheet(res);
@@ -427,16 +528,48 @@ const server = http.createServer((req, res) => {
   } else if (parts[0] === "digest" && parts.length === 1) {
     send(res, 200, digestOf(records));
   } else if (parts[0] === "signals" && parts.length === 1) {
-    const since = Number(url.searchParams.get("since_seq") ?? 0);
-    const limit = Number(url.searchParams.get("limit") ?? 100);
-    const page = records.filter((r) => r.seq > since).slice(0, limit);
+    const since = wholeNumber(url.searchParams.get("since_seq"), 0);
+    const limit = wholeNumber(url.searchParams.get("limit"), PAGE_DEFAULT);
+    // limit=0 is refused rather than clamped up to one: a caller who asked for
+    // no records and received one has been answered with something they did
+    // not ask for, which is the whole failure mode this route is being fixed
+    // for.
+    const bad = since === null ? "since_seq"
+      : limit === null || limit < 1 ? "limit" : null;
+    if (bad) {
+      send(res, 400, {
+        error: bad === "limit"
+          ? `limit must be a whole number, at least 1 and at most ${PAGE_MAX}`
+          : "since_seq must be a whole number, zero or more",
+        hint: `the cursor form is /signals?since_seq=0&limit=${PAGE_DEFAULT}`,
+        validation,
+      });
+      return;
+    }
+    const take = Math.min(limit, PAGE_MAX);
+    const page = records.filter((r) => r.seq > since).slice(0, take);
     send(res, 200, {
       records: page,
+      // Never the caller's own unparsed value: `next_seq` used to fall back to
+      // `since`, which was NaN for a non-numeric cursor and serialised as
+      // null, so a polling client either wedged on it forever or coerced it to
+      // 0 and re-read the whole feed. It is now always a number this service
+      // computed.
       next_seq: page.length ? page[page.length - 1].seq : since,
+      page_limit: take, // what was actually applied, so a clamp is visible
       validation, // once per page, before a single record is opened
     });
   } else if (parts[0] === "signals" && parts.length === 2) {
-    const ticker = decodeURIComponent(parts[1]).toUpperCase();
+    const asked = decodeOrNull(parts[1]);
+    if (asked === null) {
+      send(res, 400, {
+        error: "that path segment is not text -- it holds an incomplete " +
+          "percent-escape, so there is no ticker to look up",
+        validation,
+      });
+      return;
+    }
+    const ticker = asked.toUpperCase();
     send(res, 200, {
       records: records.filter((r) => (r.filer.ticker ?? "") === ticker),
       validation,
@@ -449,6 +582,86 @@ const server = http.createServer((req, res) => {
       validation,
     });
   }
+}
+
+// The answer of last resort. Every route above already answers "there is
+// nothing to show here" with a sentence and the command that writes it -- but
+// that whole design only covers the failures a route thought to catch, and one
+// wrong-shaped published file (a string where a list belongs, a missing key)
+// threw a TypeError mid-render that no route caught. An unguarded throw inside
+// the request handler is an uncaughtException, which killed the process: every
+// other route on the service went with it, and the person who asked for one
+// page got a dead socket. So the handler is wrapped, and a render-time throw
+// becomes the same kind of page as a missing file -- what happened, and what
+// to run.
+function renderFailure(req, res, err) {
+  const detail = String((err && err.message) || err);
+  console.error(`could not answer ${req.method} ${req.url}: ${detail}`);
+  if (res.headersSent) {
+    // Half a page is already on the wire; nothing truthful can be added to it.
+    res.destroy();
+    return;
+  }
+  let first = "";
+  try {
+    first = new URL(req.url, `http://${HOST}:${PORT}`)
+      .pathname.split("/").filter(Boolean)[0] ?? "";
+  } catch { /* an address this unparseable gets the JSON answer */ }
+  try {
+    if (HTML_ROUTES.has(first)) {
+      let verdict = null;
+      try {
+        verdict = anyValidation();
+      } catch { /* the evidence is what just failed; the page says so below */ }
+      sendHtml(res, 503, pages.message({
+        title: "Not rendered", current: `/${first}`, validation: verdict,
+        heading: "This page could not be rendered",
+        paragraphs: [
+          `The published file this page reads is not shaped the way the ` +
+          `viewer expects: ${pages.esc(detail)}.`,
+          "Rewrite the published files: <code>ledgerline publish</code>.",
+        ],
+      }));
+      return;
+    }
+    send(res, 503, {
+      error: detail,
+      hint: "the published files are not shaped the way this service expects; " +
+        "rewrite them: ledgerline publish",
+    });
+  } catch {
+    // Rendering the failure page failed too. Say so in the plainest form
+    // this service has, and stay up.
+    res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end(`${detail}\nrewrite the published files: ledgerline publish\n`);
+  }
+}
+
+const server = http.createServer((req, res) => {
+  try {
+    handle(req, res);
+  } catch (err) {
+    renderFailure(req, res, err);
+  }
+});
+
+// The backstop behind the backstop: a throw from an asynchronous callback
+// never passes through the try above. A local read service that exits on a
+// bad file is worse than one that logs and keeps answering the other routes,
+// so nothing here is allowed to end the process.
+process.on("uncaughtException", (err) => {
+  console.error("uncaught error, still serving:", err);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("unhandled rejection, still serving:", err);
+});
+
+// Failing to listen is not a request failing: there is nobody to answer, and
+// a process that stayed up holding no socket would look like a running server
+// to anyone reading the terminal. This one exception says why and stops.
+server.on("error", (err) => {
+  console.error(`cannot listen on ${HOST}:${PORT}: ${err.message}`);
+  process.exit(1);
 });
 
 const server6 = http.createServer(server.listeners("request")[0]);

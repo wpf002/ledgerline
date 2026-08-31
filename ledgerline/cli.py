@@ -1126,6 +1126,15 @@ def publish(since_seq: int = typer.Option(0, help="Continue an earlier export: "
         typer.echo(f"Also wrote watchlist.json ({res['watched']} companies), "
                    f"runs.json ({res['runs']} runs) and {res['companies']} "
                    f"company files under {os.path.join(res['dir'], 'companies')}.")
+        if res["refused"]:
+            names = ", ".join(res["refused"][:10])
+            more = ("" if len(res["refused"]) <= 10
+                    else f" and {len(res['refused']) - 10} more")
+            typer.echo(f"No page was written for {names}{more}: a company "
+                       f"file is named after its ticker, and "
+                       f"{'those are' if len(res['refused']) > 1 else 'that is'} "
+                       f"not a ticker symbol. Fix the symbol in the list you "
+                       f"imported and run `ledgerline watch --import` again.")
         if res["dropped"]:
             one = res["dropped"] == 1
             typer.echo(f"Removed {res['dropped']} company "

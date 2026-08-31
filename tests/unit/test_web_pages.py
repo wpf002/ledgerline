@@ -17,7 +17,16 @@ Each test pins one decision or defect:
   * a company nothing was assessed for shows words, never a number, and a quiet
     result is never presented as a clean bill of health;
   * every number on a company page names the filing it came from;
-  * the service still only reads, and still answers at one canonical address.
+  * the service still only reads -- at either loopback spelling, since the
+    canonical-host redirect used to answer a write attempt before the method
+    check did -- and still answers at one canonical address;
+  * nothing a request can contain ends the process: an undecodable path
+    segment, a published file with a key of the wrong type, and a feed record
+    carrying the verdict sentence without the numbers under it were each an
+    uncaught throw that exited the server and took every other route with it;
+  * the JSON route's cursor and limit are numbers or a 400, because an
+    unchecked one answered 200 with a body no consuming program could tell
+    from a correct one.
 
 The pages are served by node, so the whole module skips where node is absent.
 Isolation idiom of test_signal_store.py: edgar.DATA / edgar.DB_PATH are
@@ -427,3 +436,234 @@ def test_the_published_watchlist_row_carries_its_own_provenance(site):
                   if c["ticker"] == "TEST")
     assert latest["source"] == "emit"
     assert "split" in latest
+
+
+# ------------------------------------ nothing a request contains ends the process
+
+
+def crashed(site) -> bool:
+    """Is the service dead? One request after the one under test answers it."""
+    try:
+        return site.request("/style.css")[0] != 200
+    except OSError:
+        return True
+
+
+def test_an_undecodable_path_segment_is_answered_not_fatal(site):
+    """`new URL()` leaves an invalid percent-escape raw in the pathname, so
+    `/company/%` reached decodeURIComponent as a literal "%" and threw URIError
+    inside the request handler, which had no try/catch: Node printed the stack
+    and exited. One mistyped address, or any crawler probing "%", took the
+    viewer down for everyone. An undecodable segment is simply not a ticker."""
+    status, _, body = site.request("/company/%")
+    assert status == 404
+    assert "is not a ticker symbol" in body
+    assert statement() in body
+
+    # The JSON route decoded the same way, at the same cost.
+    json_status, _, json_body = site.request("/signals/%E0%A4%A")
+    assert json_status == 400
+    assert json.loads(json_body)["validation"]["verdict"] == "KILL"
+
+    assert not crashed(site), "the service exited on an undecodable path"
+
+
+def test_a_wrong_shaped_published_file_renders_a_page_not_a_dead_socket(site):
+    """A published file that is valid JSON and carries its validation block
+    passes every guard the service has, and then throws mid-render if a key
+    holds the wrong type -- `runs: [null]` on the run log, a string where the
+    company page expects a list of assessments. That TypeError escaped the
+    handler and exited the process, so one bad file turned every route into a
+    dead socket. The whole readView/notPublished/message design exists to
+    answer 'there is nothing to show here' with a sentence and a command; a
+    shape error now arrives that way too."""
+    with open(os.path.join(site.feed_dir, "runs.json")) as fh:
+        block = json.load(fh)["validation"]
+    with open(os.path.join(site.feed_dir, "runs.json"), "w") as fh:
+        json.dump({"validation": block, "runs": [None]}, fh)
+
+    status, _, body = site.request("/activity")
+    assert status == 503
+    assert "could not be rendered" in body
+    assert "ledgerline publish" in body
+    assert statement() in body, "the verdict travels with the failure page"
+    assert not crashed(site), "the service exited rendering a wrong-shaped file"
+
+    # A list-shaped key holding a string is ignored rather than mapped over:
+    # the page says what it has, which is nothing.
+    path = os.path.join(site.feed_dir, "companies", "TEST.json")
+    with open(path) as fh:
+        page = json.load(fh)
+    page["history"] = "abc"
+    page["filings"] = "oops"
+    with open(path, "w") as fh:
+        json.dump(page, fh)
+    assert site.request("/company/TEST")[0] == 200
+    assert not crashed(site)
+
+
+def test_a_feed_record_without_its_measured_numbers_is_refused_not_fatal(site):
+    """The loader's gate checked `validation.statement` and nothing else, then
+    digestOf read `validation.measured.fpr_per_control_quarter` off the same
+    block: a record carrying the sentence without the numbers it is derived
+    from killed the process instead of being refused. The gate's own error
+    message says its job is to refuse incomplete evidence -- it has to check
+    the evidence this file actually reads. schema.py declares the same block
+    closed with `measured` required."""
+    feed = os.path.join(site.feed_dir, "signals.jsonl")
+    with open(feed) as fh:
+        lines = [json.loads(ln) for ln in fh if ln.strip()]
+    for rec in lines:
+        del rec["validation"]["measured"]
+    with open(feed, "w") as fh:
+        fh.write("".join(json.dumps(r) + "\n" for r in lines))
+
+    status, _, body = site.request("/digest")
+    assert status == 503
+    assert "measured" in json.loads(body)["error"]
+    assert site.request("/")[0] == 503
+    assert not crashed(site), "the service exited on a half-complete record"
+
+
+def test_a_traversal_dressed_as_a_ticker_never_reads_outside_the_feed(site):
+    """companies/ is a directory of files and ".." is a ticker-shaped string.
+    The pattern is matched on the way in and the joined path is checked after
+    it resolves, so neither an escaped separator nor a segment that walks up
+    can name a file this service was not published to serve."""
+    outside = os.path.join(os.path.dirname(site.feed_dir), "secret.json")
+    with open(outside, "w") as fh:
+        json.dump({"validation": {"statement": "x"}, "ticker": "SECRET",
+                   "name": "not published"}, fh)
+    # `/company/..` and `/company/%2e%2e` never reach a route: URL parsing
+    # resolves both away to `/`. These are the spellings that survive it and
+    # arrive as a segment for the pattern to match.
+    for path in ("/company/..%2f..%2fsecret", "/company/%2e%2e%2fsecret",
+                 "/company/..%2fsecret", "/company/....%2f%2fsecret"):
+        status, _, body = site.request(path)
+        assert status == 404, path
+        assert "not published" not in body, path
+    assert not crashed(site)
+
+
+# --------------------------------------------------- the JSON route's parameters
+
+
+def test_signals_refuses_a_cursor_or_a_limit_that_is_not_a_number(site):
+    """Number("abc") is NaN and Number("-1") is -1, and neither was checked:
+    `?limit=abc` sliced to nothing and answered 200 with an empty page and
+    next_seq 0, byte-identical in shape to "you are caught up"; `?limit=-1`
+    dropped only the LAST record and presented 39,563 of 39,564 as a complete
+    page; `?since_seq=abc` made next_seq serialise as null, and a client that
+    coerced that back to 0 re-read the entire feed. This route exists so other
+    programs can read the feed, and three of those four answers were wrong ones
+    a program could not tell from right ones."""
+    for bad in ("limit=abc", "limit=-1", "limit=1e9", "limit=0",
+                "since_seq=abc", "since_seq=-3"):
+        status, _, body = site.request(f"/signals?{bad}")
+        assert status == 400, bad
+        answer = json.loads(body)
+        assert answer["error"].startswith(bad.split("=")[0]), bad
+        assert answer["validation"]["verdict"] == "KILL", bad
+
+    # The form service/README.md documents, which used to return an empty page
+    # on a feed with records in it.
+    full = json.loads(site.body("/signals?since_seq=&limit="))
+    assert len(full["records"]) == 2
+    assert full["next_seq"] == 2
+
+
+def test_signals_caps_one_page_and_says_what_it_applied(site):
+    """`?limit=1000000` served every record as one 90 MB JSON string. The cap
+    loses nothing -- next_seq advances, so the whole feed is still reachable a
+    page at a time -- and page_limit reports what was actually applied rather
+    than leaving the caller to infer it from a short page."""
+    first = json.loads(site.body("/signals?limit=1"))
+    assert len(first["records"]) == 1
+    assert first["page_limit"] == 1
+    assert first["next_seq"] == 1
+
+    rest = json.loads(site.body(f"/signals?since_seq={first['next_seq']}"))
+    assert len(rest["records"]) == 1
+    assert rest["records"][0]["seq"] == 2
+
+    capped = json.loads(site.body("/signals?limit=999999999"))
+    assert capped["page_limit"] == 1000
+
+
+def test_a_write_is_refused_at_either_loopback_spelling(site):
+    """The canonical-host 301 ran before the method check, so a POST addressed
+    to 127.0.0.1 was redirected instead of refused. A 301 carries no body, so
+    the verdict did not travel with the refusal, and a client following the
+    redirect the ordinary way had its POST turned into a GET and was served the
+    feed -- a write attempt answered with a 200 read."""
+    for method in ("POST", "PUT", "DELETE", "PATCH"):
+        for host in (None, f"127.0.0.1:{site.port}", f"[::1]:{site.port}"):
+            status, _, body = site.request("/signals", method=method, host=host)
+            assert status == 405, (method, host)
+            assert json.loads(body)["validation"]["verdict"] == "KILL"
+
+
+# ------------------------------------- what an unassessable company may claim
+
+
+def _company_page(scoreable: bool, label: str | None) -> dict:
+    return {"ticker": "TEST", "name": "T Inc", "cik": "0000000001",
+            "sic": None, "groups": [], "explain": "…", "measures": [],
+            "filings": [], "restatements": [], "history": [],
+            "latest": {"as_of": "2026-08-30", "period": "2026-06-30",
+                       "score": None if not scoreable else 12.0,
+                       "flagged": False, "scoreable": scoreable,
+                       "reason": None if scoreable else
+                       "Cannot assess: cash from operations reported in only "
+                       "87% of quarters -- 90% is needed."},
+            "provenance": {"label": label, "derived_fraction": None,
+                           "derived_fraction_high": False, "measures": []},
+            "validation": contract.validation_block()}
+
+
+def test_a_company_that_could_not_be_assessed_claims_neither_quiet_nor_traced():
+    """Verdict.provenance_label defaults to "TRACED" and every unassessable
+    early return in evaluate() left the default in place, because the trail is
+    only resolved on the scoreable path. The page then printed "Every figure
+    behind the measures that broke was traced back to the filing it came from"
+    followed by "No measure broke from this company's pattern" -- a clean bill
+    of health with a provenance stamp on it, for a company where zero of the
+    thirteen measures were evaluated. render.py:12 records the same reading
+    being printed at the terminal as a score of 0.0."""
+    body = render_page("company", _company_page(scoreable=False, label="TRACED"))
+    trail = body.split("Where each number came from")[1]
+    assert "could not be assessed, so no measure was evaluated" in trail
+    assert "No measure broke" not in trail
+    assert "was traced back to the filing it came from" not in trail
+
+    # A company that WAS assessed and stayed quiet keeps both sentences: it is
+    # the other piece of news, and the two must not read the same.
+    quiet = render_page("company", _company_page(scoreable=True, label="TRACED"))
+    quiet_trail = quiet.split("Where each number came from")[1]
+    assert "No measure broke" in quiet_trail
+    assert "was traced back to the filing it came from" in quiet_trail
+
+
+def test_the_watchlist_header_tells_unchecked_apart_from_checked_and_stuck():
+    """`n_assessable` counts only True, and `assessable` is tri-state, so zero
+    meant either "nobody has run check" or "check ran and nothing cleared the
+    gate". The header said the first for both, telling the reader to run
+    `ledgerline check` directly above rows each carrying a "cannot assess"
+    chip -- the same collapse _quality() exists one row down to prevent."""
+    def header(**counts) -> str:
+        row = {"ticker": "TEST", "name": "T Inc", "groups": [], "quality": [],
+               "assessable": counts.get("assessable"), "latest": None}
+        return render_page("watchlist",
+                           {"companies": [row], "groups": [], "n_companies": 1,
+                            "validation": contract.validation_block(), **counts},
+                           {"q": "", "group": "", "assessable": "", "page": 1})
+
+    unchecked = header(n_assessable=0, n_checked=0, assessable=None)
+    assert "None of them have been checked yet" in unchecked
+
+    stuck = header(n_assessable=0, n_checked=1, assessable=False)
+    assert "None of them have been checked yet" not in stuck
+    assert "have been checked, and none of them can be assessed yet" in stuck
+
+    fine = header(n_assessable=1, n_checked=1, assessable=True)
+    assert "have been checked and can be assessed" in fine

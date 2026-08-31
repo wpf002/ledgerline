@@ -47,6 +47,16 @@ const PLAIN = {
   DILUTION_YOY: "share-creep",
 };
 
+// Every list on a page comes out of a published file, and `x || []` only
+// defends against the file not having the key -- a file that has it and holds
+// a string instead sailed through and threw on `.map`, which took the whole
+// process down rather than rendering a page saying so. A published file whose
+// shape is wrong is a file to rewrite, not markup to attempt, so the reader
+// gets the empty-state sentence the page already has for "nothing here yet".
+function list(x) {
+  return Array.isArray(x) ? x : [];
+}
+
 export function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -213,7 +223,7 @@ export function overview(digest) {
     ["flagged", num(run.gated_in)],
   ];
   const expected = Number(digest.expected_false_positives_if_nothing_wrong ?? 0);
-  const fires = digest.fires || [];
+  const fires = list(digest.fires);
   const body = `
 <h2>Latest run</h2>
 <dl class="stats">${stats.map(([k, v]) =>
@@ -233,7 +243,7 @@ ${fires.length === 0
        <th>measures out of line</th></tr>${fires.map((f) =>
       `<tr><td class="tick"><a href="/company/${encodeURIComponent(f.ticker)}">` +
       `${esc(f.ticker)}</a></td><td class="num">${esc(f.score)}</td><td>` +
-      `${(f.flags || []).map((x) => esc(PLAIN[x] || x)).join(", ")}</td></tr>`)
+      `${list(f.flags).map((x) => esc(PLAIN[x] || x)).join(", ")}</td></tr>`)
       .join("")}</table></div>
      <p class="note">A company is flagged at 45 of 100 with at least two
        measures out of line. The score is only meaningful against this
@@ -281,8 +291,8 @@ function lastAssessment(c) {
     : "";
   return `${head} <span class="num">${esc(l.score)} of 100</span><br>` +
     `<span class="quiet">quarter ending ${esc(l.period)}, from figures filed ` +
-    `by ${esc(l.as_of)}${esc(from)}${(l.flags || []).length
-      ? ` — ${(l.flags).map(esc).join(", ")}` : ""}</span>`;
+    `by ${esc(l.as_of)}${esc(from)}${list(l.flags).length
+      ? ` — ${list(l.flags).map(esc).join(", ")}` : ""}</span>`;
 }
 
 const ASSESSABLE_OPTIONS = [
@@ -303,7 +313,7 @@ const ASSESSABLE_PHRASE = {
 
 function filters(data, f) {
   const groupOpts = ['<option value="">every group</option>'].concat(
-    (data.groups || []).map((g) =>
+    list(data.groups).map((g) =>
       `<option value="${esc(g.name)}"${g.name === f.group ? " selected" : ""}>` +
       `${esc(g.name)} (${num(g.n)})</option>`)).join("");
   const stateOpts = ASSESSABLE_OPTIONS.map(([v, label]) =>
@@ -328,8 +338,8 @@ function filters(data, f) {
 // --group` makes at the terminal -- an unknown group is a typo, an empty
 // group is a group nobody has filled in.
 function emptyExplanation(data, f) {
-  const known = (data.groups || []).map((g) => g.name);
-  if (!data.companies.length) {
+  const known = list(data.groups).map((g) => g.name);
+  if (!list(data.companies).length) {
     return ["No companies are being watched yet.",
       "Add some: <code>ledgerline watch --add AAPL,MSFT,NVDA</code>, or " +
       "import a spreadsheet with <code>ledgerline watch --import list.csv</code>."];
@@ -341,7 +351,7 @@ function emptyExplanation(data, f) {
         : "You have not created any groups yet.",
       "Create one: <code>ledgerline groups --assign semis --tickers NVDA,AMD,INTC</code>."];
   }
-  const grp = (data.groups || []).find(
+  const grp = list(data.groups).find(
     (g) => g.name.toLowerCase() === (f.group || "").toLowerCase());
   if (grp && grp.n === 0) {
     return [`The group “${esc(grp.name)}” exists, and no watched company is ` +
@@ -362,7 +372,7 @@ function emptyExplanation(data, f) {
   if (f.q) bits.push(`with “${esc(f.q)}” in the ticker or name`);
   const out = ["Nothing matched.",
     `You asked for ${bits.join(" ")}. None of your ` +
-    `${num(data.companies.length)} watched companies fit.`];
+    `${num(list(data.companies).length)} watched companies fit.`];
   if (f.assessable === "yes" || f.assessable === "no") {
     out.push("Assessability is recorded by <code>ledgerline check</code>; " +
       "until that has run a company is neither — it is not checked yet.");
@@ -379,14 +389,37 @@ function emptyExplanation(data, f) {
   return out;
 }
 
+// "Nothing has been checked" and "everything has been checked and none of it
+// can be assessed" are two pieces of news, and this sentence used to say the
+// first one for both: it branched on the truthiness of n_assessable, which is
+// zero either way. A watchlist where `check` has run against a cold cache
+// therefore told the reader to run the very command whose result was being
+// reported, directly above rows each carrying a "cannot assess" chip.
+// n_checked is what separates them; a file published before that field existed
+// carries no answer, and the old sentence is the honest one for it.
+function assessableSentence(data) {
+  const watched = num(data.n_companies);
+  if (data.n_assessable) {
+    return `${num(data.n_assessable)} of the ${watched} watched have been ` +
+      "checked and can be assessed; every other row says why not.";
+  }
+  if (data.n_checked) {
+    return `${num(data.n_checked)} of the ${watched} watched have been ` +
+      "checked, and none of them can be assessed yet; every row says why not.";
+  }
+  return "None of them have been checked yet, so nothing here is known to be " +
+    "assessable — <code>ledgerline check</code> records that, quickly once " +
+    "<code>ledgerline fetch</code> has run.";
+}
+
 export const PAGE_SIZE = 250;
 
 export function watchlist(data, f) {
   const q = (f.q || "").trim().toLowerCase();
-  const rows = (data.companies || []).filter((c) => {
+  const rows = list(data.companies).filter((c) => {
     if (q && !(String(c.ticker || "").toLowerCase().includes(q) ||
                String(c.name || "").toLowerCase().includes(q))) return false;
-    if (f.group && !(c.groups || []).some(
+    if (f.group && !list(c.groups).some(
       (g) => g.toLowerCase() === f.group.toLowerCase())) return false;
     if (f.assessable === "yes" && c.assessable !== true) return false;
     if (f.assessable === "no" && c.assessable !== false) return false;
@@ -407,18 +440,16 @@ export function watchlist(data, f) {
         num((page - 1) * PAGE_SIZE + shown.length)}`
       : "";
     const counts = `<p class="note">${plural(rows.length, "company", "companies")}${
-      rows.length === data.companies.length ? " watched" : ` of ${
-        num(data.companies.length)} watched`}${range}.
-      ${data.n_assessable
-        ? `${num(data.n_assessable)} of the ${num(data.n_companies)} watched have been checked and can be assessed; every other row says why not.`
-        : "None of them have been checked yet, so nothing here is known to be assessable — <code>ledgerline check</code> records that, quickly once <code>ledgerline fetch</code> has run."}</p>`;
+      rows.length === list(data.companies).length ? " watched" : ` of ${
+        num(list(data.companies).length)} watched`}${range}.
+      ${assessableSentence(data)}</p>`;
     const table = `<div class="scroll"><table>
     <tr><th>company</th><th>groups</th><th>last saved assessment</th>
         <th>what to know about this row</th></tr>
     ${shown.map((c) => `<tr>
       <td class="tick"><a href="/company/${encodeURIComponent(c.ticker || "")}">${esc(c.ticker || "—")}</a>
         <br><span class="quiet">${esc(c.name || "")}</span></td>
-      <td class="quiet">${(c.groups || []).map(esc).join(", ") || "—"}</td>
+      <td class="quiet">${list(c.groups).map(esc).join(", ") || "—"}</td>
       <td>${lastAssessment(c)}</td>
       <td>${chips(c.quality) || '<span class="quiet">nothing outstanding</span>'}</td>
     </tr>`).join("")}
@@ -486,7 +517,7 @@ function measuresTable(measures) {
 }
 
 function timelineTable(page) {
-  const f = page.filings || [];
+  const f = list(page.filings);
   if (!f.length) {
     return '<div class="empty"><p>No filings are stored for this company yet.' +
       "</p><p>Download its filing history: <code>ledgerline fetch --only " +
@@ -510,7 +541,7 @@ function timelineTable(page) {
 }
 
 function restatementsTable(page) {
-  const r = page.restatements || [];
+  const r = list(page.restatements);
   if (!r.length) {
     return '<p class="quiet">No revised figures recorded for this company. ' +
       "Revisions are noticed when a later filing restates a figure this tool " +
@@ -538,10 +569,33 @@ function restatementsTable(page) {
    revision rate it had already filtered.</p>`;
 }
 
+// Why this section asks whether anything was assessed before it says anything
+// about tracing: an unassessable company used to render "Every figure behind
+// the measures that broke was traced back to the filing it came from" followed
+// by "No measure broke from this company's pattern in the latest assessment".
+// Both sentences were false in the same way. Zero of the thirteen measures
+// were evaluated -- the same page prints "not measured" on every one of them --
+// so nothing broke, nothing was quiet, and no trail was ever resolved to
+// guarantee. Read together they are a clean bill of health with a provenance
+// stamp on it, on a company this tool declined to assess, which is the single
+// reading the project exists to prevent (render.py:12 records the earlier
+// version of this bug at the terminal).
 function provenanceTrail(page, cik) {
   const prov = page.provenance || {};
-  const measures = prov.measures || [];
+  const measures = list(prov.measures);
   const label = prov.label;
+  const latest = page.latest;
+  if (!latest) {
+    return '<p class="quiet">No assessment has been saved for this company, ' +
+      "so no measure has been evaluated and there is nothing to trace. The " +
+      "filings above are the whole record of what was read.</p>";
+  }
+  if (!latest.scoreable && !measures.length) {
+    return '<p class="quiet">This company could not be assessed, so no ' +
+      "measure was evaluated and no figure was traced. The filings above are " +
+      "the whole record of what was read.</p>" +
+      (latest.reason ? `<p class="quiet">${esc(latest.reason)}</p>` : "");
+  }
   const head = [];
   if (label) {
     head.push(label === "TRACED"
@@ -572,14 +626,14 @@ function provenanceTrail(page, cik) {
     `<div class="scroll"><table>
     <tr><th>measure</th><th>figure it used</th><th>as filed</th>
         <th>filing it came from</th></tr>
-    ${measures.map((m) => (m.inputs || []).map((t, i) =>
+    ${measures.map((m) => list(m.inputs).map((t, i) =>
       `<tr><td>${i === 0 ? esc(m.measure) : ""}</td>
         <td>${esc(t.figure)}<br><span class="quiet">${esc(t.concept || "")}</span></td>
         <td class="num">${esc(t.period || "—")}<br><span class="quiet">${
         t.origin === "derived"
           ? "worked out from year-to-date reports"
           : "reported directly"}</span></td>
-        <td class="acc">${(t.sources || []).map((a) =>
+        <td class="acc">${list(t.sources).map((a) =>
           `<a href="${esc(secUrl(cik, a))}" rel="noreferrer">${esc(a)}</a>`)
         .join("<br>") || "—"}<br><span class="quiet">${esc(t.form || "")}${
         t.filed ? `, filed ${esc(t.filed)}` : ""}</span></td></tr>`).join(""))
@@ -592,7 +646,7 @@ function provenanceTrail(page, cik) {
 }
 
 function historyTable(page) {
-  const h = page.history || [];
+  const h = list(page.history);
   if (h.length < 2) return "";
   return `<h2>Earlier assessments</h2><div class="scroll"><table>
   <tr><th>as of</th><th>quarter</th><th>result</th><th>measures out of line</th></tr>
@@ -606,7 +660,7 @@ function historyTable(page) {
           `<span class="num">${esc(r.score)} of 100</span>`
         : `<span class="verdict-quiet">not flagged</span> ` +
           `<span class="num">${esc(r.score)} of 100</span>`}</td>
-    <td class="quiet">${(r.flags || []).map(esc).join(", ") || "—"}</td></tr>`).join("")}
+    <td class="quiet">${list(r.flags).map(esc).join(", ") || "—"}</td></tr>`).join("")}
   </table></div>
   <p class="note">Saved assessments, newest first. Each one was made from the
    figures that had been filed by its own date — none of them can see a filing
@@ -618,7 +672,7 @@ export function company(page) {
     ["ticker", page.ticker],
     ["SEC identifier (CIK)", page.cik],
     ["industry code (SIC)", page.sic || "not recorded"],
-    ["groups", (page.groups || []).join(", ") || "none"],
+    ["groups", list(page.groups).join(", ") || "none"],
   ];
   const body = `
 <h2>${esc(page.ticker)} — ${esc(page.name || "")}</h2>
@@ -650,7 +704,7 @@ ${historyTable(page)}`;
 // The Company tab with no company named: the list is 1,498 rows long, so the
 // useful landing is a search box and the companies something was said about.
 export function companyIndex(data, note) {
-  const flagged = (data.companies || []).filter(
+  const flagged = list(data.companies).filter(
     (c) => (c.latest || {}).flagged).slice(0, 25);
   const body = `
 <h2>Open a company</h2>
@@ -669,7 +723,7 @@ ${flagged.map((c) => `<tr>
   <td class="tick"><a href="/company/${encodeURIComponent(c.ticker)}">${esc(c.ticker)}</a>
     <br><span class="quiet">${esc(c.name || "")}</span></td>
   <td class="num">${esc(c.latest.score)}</td>
-  <td class="quiet">${(c.latest.flags || []).map(esc).join(", ")}</td></tr>`).join("")}
+  <td class="quiet">${list(c.latest.flags).map(esc).join(", ")}</td></tr>`).join("")}
 </table></div>
 <p class="note">Flagged at 45 of 100 with at least two measures out of line.
  A flag is a prompt to read the filings, not a finding — this detector's
@@ -684,7 +738,7 @@ ${flagged.map((c) => `<tr>
 // ------------------------------------------------------------------ activity
 
 export function activity(data) {
-  const runs = data.runs || [];
+  const runs = list(data.runs);
   const body = `
 <h2>Runs</h2>
 <p class="note">Every scan and fetch this machine has run, newest first. A scan

@@ -72,7 +72,7 @@ class FilerCoverage:
     evaluated_weight: float
     weight_total: float
     can_reach_threshold: bool | None
-    derived_fraction: float
+    derived_fraction: float | None
     fiscal: dict
     peer_level: int | None = None
     peer_n: int = 0
@@ -115,7 +115,18 @@ def _metric_entries(cov: dict) -> dict:
 
 
 def filer_coverage(cik: str, ticker: str, norm: dict, as_of: str) -> FilerCoverage:
-    """One filer's coverage record, from the same evaluate() that ships."""
+    """One filer's coverage record, from the same evaluate() that ships.
+
+    Every field comes from the SAME truncation. evaluate() truncates internally
+    through edgar.as_of, but the fiscal profile used to be read off the full
+    normalized dict while the record was stamped with the cutoff -- so a record
+    keyed by as_of carried period ends that had not happened yet. BKE at cutoff
+    2014-05-15 listed long quarters ending 2018-02-03 and 2024-02-03; at that
+    date only 2013-02-02 existed. Across the first 80 watched filers, 78 stored
+    profiles differed from the point-in-time one and 26 differed in the
+    calendar label itself, which is the 52/53-week census the dashboard reports
+    per date.
+    """
     res = signals_v3.evaluate(ticker, cik, as_of=as_of, norm=norm)
     scoreable = bool(res.get("scoreable"))
     code = res.get("reason_code")
@@ -139,8 +150,9 @@ def filer_coverage(cik: str, ticker: str, norm: dict, as_of: str) -> FilerCovera
         evaluated_weight=res.get("evaluated_weight", 0.0),
         weight_total=res.get("weight_total", signals_v3.WEIGHT_TOTAL),
         can_reach_threshold=can_reach,
-        derived_fraction=res.get("derived_fraction", 0.0),
-        fiscal=fiscal.profile(series(norm, "revenue", "Q")).as_dict(),
+        derived_fraction=res.get("derived_fraction"),
+        fiscal=fiscal.profile(series(edgar.as_of(norm, as_of),
+                                     "revenue", "Q")).as_dict(),
     )
 
 

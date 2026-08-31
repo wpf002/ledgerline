@@ -79,15 +79,23 @@ def reading_trace(snap: dict, period: str | None, flags: list[dict]) -> dict:
     payload unreadable without answering "where did THIS number come from"."""
     # Imported here, not at module top: signals_v3 imports this module, and the
     # inputs table lives there because it is the gate's own declaration of what
-    # each diagnostic consumes (already correct, already special-cased).
-    from .signals_v3 import DIAGNOSTIC_INPUTS
+    # each diagnostic consumes.
+    #
+    # PROVENANCE_INPUTS, never DIAGNOSTIC_INPUTS. The latter is the coverage
+    # gate's table -- which quarterly FLOW metrics must be complete enough to
+    # score -- and keying the trace on it published a strict subset of the
+    # accessions six of the thirteen diagnostics actually read, while label()
+    # below still called the reading TRACED. It also made the UNTRACED
+    # abstention unfalsifiable for those six: the untraceable input was not in
+    # the list being checked.
+    from .signals_v3 import PROVENANCE_INPUTS
 
     if not period:
         return {"period": None, "flags": {}}
     out: dict[str, dict] = {}
     for f in flags:
         name = (f.get("code") or "").lower()
-        out[name] = trace(snap, period, DIAGNOSTIC_INPUTS.get(name, ()))
+        out[name] = trace(snap, period, PROVENANCE_INPUTS.get(name, ()))
     return {"period": period, "flags": out}
 
 

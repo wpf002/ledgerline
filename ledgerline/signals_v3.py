@@ -79,7 +79,26 @@ from .signals import Diagnostics, diagnose, series
 # cannot reach THRESHOLD at any z is unscoreable, not score 0.0). Scores from
 # different gate versions must never be pooled into one average -- the version
 # travels on every Verdict so a future track record can hold them apart.
-GATE_VERSION = "3.1.0"
+#
+# "3.2.0" is the metric-arithmetic pass. Four changes move what a reading says:
+#   * total_debt no longer double-counts current maturities when a filer tags
+#     the all-in LongTermDebt (edgar.SUBSUMED_GROUPS). 1,701 of 52,328 stored
+#     total_debt rows across 219 filers carried the inflated shape, and 871
+#     published signals computed net_debt_to_ttm_ocf from one -- QCOM at
+#     2018-08-15 read 19.291bn against a true 15.378bn, +25.4%. The direction
+#     is one-sided: every affected debt figure falls.
+#   * deferred_vs_revenue_gap and net_debt_to_ttm_ocf abstain with
+#     PERIOD_MISALIGNED when the balance sheet leg is stale, as dso and dio
+#     already did. Roughly a fifth of each diagnostic's evaluations were on a
+#     balance more than 135 days older than the assessed quarter, so those
+#     flags stop firing. Both carry weight 0.0000, so no SCORE moves -- but
+#     gated_in can, because MIN_FLAGS counts flags, not weight.
+#   * the accession trace keys on PROVENANCE_INPUTS, so flag `sources`,
+#     `filed` and the TRACED/PARTIAL/UNTRACED label are computed over every
+#     input the arithmetic read rather than the coverage-gated subset.
+#   * derived_fraction is None, not 0.0, on the paths that return before
+#     diagnose() runs.
+GATE_VERSION = "3.2.0"
 
 # diagnostic -> (direction, weight, scale_floor)
 #   direction +1 : unusually HIGH is bad
@@ -121,12 +140,15 @@ LABELS = {
 # Metrics whose absence makes the filer unscoreable rather than partially scored.
 REQUIRED_COVERAGE = ("revenue", "operating_cash_flow", "net_income")
 
-# Which coverage-gated metrics each diagnostic actually consumes. A metric that
-# coverage_report() marks scoreable=False must not silently produce a
-# diagnostic value: FTI at cutoff 2020-08-15 had cost_of_revenue coverage of
-# 56%, and dio was computed anyway from a 2020 inventory balance over a 2018
-# COGS window. The old gate only enforced REQUIRED_COVERAGE, so a filer failing
-# on any other metric was still scored on it.
+# Which COVERAGE-GATED metrics each diagnostic consumes -- a gate table, not a
+# provenance table. A metric that coverage_report() marks scoreable=False must
+# not silently produce a diagnostic value: FTI at cutoff 2020-08-15 had
+# cost_of_revenue coverage of 56%, and dio was computed anyway from a 2020
+# inventory balance over a 2018 COGS window. The old gate only enforced
+# REQUIRED_COVERAGE, so a filer failing on any other metric was still scored on
+# it. Balance-sheet metrics are absent by design: coverage is a statement about
+# quarterly flow completeness. For "which filings did this number come from",
+# use PROVENANCE_INPUTS.
 DIAGNOSTIC_INPUTS: dict[str, tuple[str, ...]] = {
     "cash_conversion_gap":     ("revenue", "operating_cash_flow"),
     "accrual_ratio":           ("net_income", "operating_cash_flow"),
@@ -140,6 +162,33 @@ DIAGNOSTIC_INPUTS: dict[str, tuple[str, ...]] = {
     "op_margin":               ("revenue", "operating_income"),
     "ocf_to_revenue":          ("revenue", "operating_cash_flow"),
     "net_debt_to_ttm_ocf":     ("operating_cash_flow",),
+    "dilution_yoy":            ("diluted_shares",),
+}
+
+# Every metric each diagnostic's ARITHMETIC reads, which is what a trace has to
+# cover. The two tables were one table, and the trace keyed on the gate's --
+# so six of thirteen diagnostics published a strict subset of the accessions
+# their number came from and the reading was still labelled TRACED. WBD at
+# cutoff 2013-08-15 fired DEFERRED_VS_REVENUE_GAP at -0.3243 citing only the
+# 10-Q of 2013-07-30; the deferred-revenue balances that produced half of that
+# number came from accession 0001193125-10-035850, which appeared nowhere in
+# the flag's trace. Worse, the UNTRACED abstention checks only the metrics it
+# is handed, so it was structurally unable to fire on the missing half.
+# Measured: of 5,367 (fired flag, omitted input) pairs in the store, 382 (7.1%)
+# had an omitted input whose accession is nowhere in the flag's sources.
+PROVENANCE_INPUTS: dict[str, tuple[str, ...]] = {
+    "cash_conversion_gap":     ("revenue", "operating_cash_flow"),
+    "accrual_ratio":           ("net_income", "operating_cash_flow", "total_assets"),
+    "receivables_vs_revenue":  ("revenue", "receivables"),
+    "inventory_vs_revenue":    ("revenue", "inventory"),
+    "dso":                     ("revenue", "receivables"),
+    "dio":                     ("cost_of_revenue", "inventory"),
+    "deferred_vs_revenue_gap": ("revenue", "deferred_revenue"),
+    "revenue_accel":           ("revenue",),
+    "gross_margin":            ("revenue", "gross_profit", "cost_of_revenue"),
+    "op_margin":               ("revenue", "operating_income"),
+    "ocf_to_revenue":          ("revenue", "operating_cash_flow"),
+    "net_debt_to_ttm_ocf":     ("operating_cash_flow", "cash", "total_debt"),
     "dilution_yoy":            ("diluted_shares",),
 }
 
@@ -277,7 +326,13 @@ class Verdict:
     reason: str | None = None
     flags: list[dict] = field(default_factory=list)
     coverage: dict = field(default_factory=dict)
-    derived_fraction: float = 0.0
+    # None, not 0.0, until diagnose() has actually measured it. The coverage
+    # gate returns before diagnose() runs, so 104 of 1,498 filers at as_of
+    # 2026-08-31 published derived_fraction 0.0 -- the positive claim that none
+    # of their quarterly figures were worked out by differencing YTD reports --
+    # where the measurable values ran to 0.491 (ACT), just under the
+    # DERIVED_FRACTION_HIGH tripwire. Same failure mode as `score` above.
+    derived_fraction: float | None = None
     diagnostics: dict = field(default_factory=dict)
     # Signed z for EVERY diagnostic that could be computed, including those
     # below Z_TRIGGER. Calibration fits on these, so the weights are fitted to
@@ -392,12 +447,16 @@ def _current_trace(snap: dict, period: str | None,
                    name: str) -> tuple[list[str], str | None]:
     """(accessions, newest filed date) behind one diagnostic's current-quarter
     inputs, straight off the as_of() snapshot so the citation is by
-    construction the vintage that was public at the cutoff."""
+    construction the vintage that was public at the cutoff.
+
+    Keyed on PROVENANCE_INPUTS, not the coverage gate's table: a citation that
+    omits the balance sheet half of a ratio sends a reader to a filing that
+    does not contain the number."""
     if not period:
         return [], None
     sources: list[str] = []
     filed: str | None = None
-    for metric in DIAGNOSTIC_INPUTS.get(name, ()):
+    for metric in PROVENANCE_INPUTS.get(name, ()):
         rows = [r for r in snap.get(metric, []) if r.get("end", "") <= period]
         if not rows:
             continue

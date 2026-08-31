@@ -77,6 +77,39 @@ def rel_change(prior: float, new: float) -> float:
     return abs(new - prior) / max(abs(prior), abs(new), 1.0)
 
 
+def _components(v: dict) -> dict[str, float]:
+    """concept -> contributed value for a summed vintage; the single concept
+    for any other row. edgar._summed_pit writes `components`."""
+    comps = v.get("components")
+    if comps is None:
+        return {v.get("concept") or "": float(v.get("value", 0.0))}
+    return dict(comps)
+
+
+def component_arrival(prior: dict, cur: dict) -> bool:
+    """Did this total move only because the component SET changed?
+
+    A summed metric gets a vintage wherever any component was filed, and a
+    component nobody has tagged yet contributes zero -- so the first filing to
+    tag one moves the total without anybody revising anything. Hancock Whitney
+    (CIK 0000750577), total_debt at 2010-12-31: LongTermDebt is 376,000 in the
+    10-K of 2011-02-28 and in every filing after it, never touched, but the
+    10-K/A of 2012-02-29 tagged ShortTermBorrowings 364,676,000 for the same
+    period end and diff() reported a material 971x "revision". Measured across
+    all 1,498 cached filers, 1,687 of 4,287 summed-metric events (39.4%), and
+    1,299 of the 2,568 material ones, were this rather than a revision -- which
+    is half of the denominator restate.py's own docstring uses to say what
+    fraction of revisions matter.
+
+    True only when no concept present in BOTH vintages changed value, so a real
+    revision that lands in the same filing as a new component still reports.
+    """
+    a, b = _components(prior), _components(cur)
+    if a.keys() == b.keys():
+        return False
+    return all(a[c] == b[c] for c in a.keys() & b.keys())
+
+
 def stored_vintages(conn: sqlite3.Connection,
                     cik: str) -> dict[tuple[str, str, str], list[dict]]:
     """(metric, end_date, kind) -> stored vintages, ascending by filed."""
@@ -102,6 +135,9 @@ def diff(conn: sqlite3.Connection, cik: str, norm: dict) -> list[Restatement]:
     emits nothing; on a first ingest of a filer with history, every historical
     revision is emitted once, so the event table is the complete revision
     record rather than only what happened after we started watching.
+
+    A summed total that moved only because a component was tagged for the first
+    time is not a revision either -- see component_arrival.
     """
     stored = stored_vintages(conn, cik)
     events: list[Restatement] = []
@@ -117,6 +153,8 @@ def diff(conn: sqlite3.Connection, cik: str, norm: dict) -> list[Restatement]:
                     continue  # this revision was already recorded
                 if cur["value"] == prior["value"]:
                     continue  # a re-filing that changed nothing is not a revision
+                if component_arrival(prior, cur):
+                    continue  # a component was newly tagged; nothing was revised
                 form = cur.get("form")
                 events.append(
                     Restatement(

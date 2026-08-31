@@ -69,10 +69,12 @@ def test_verdict_reports_how_much_weight_it_actually_evaluated():
 def test_verdict_carries_the_gate_version():
     """The span guard changed which quarters evaluate, so scores from this
     arithmetic must never pool with Phase 0's. Pinned: a silent version bump
-    (or a silent failure to bump on the next change) fails here."""
+    (or a silent failure to bump on the next change) fails here. 3.2.0 is the
+    metric-arithmetic pass -- the total_debt double-count, the two stale-balance
+    abstentions, the provenance input table and the derived_fraction default."""
     res = signals_v3.evaluate("TEST", "0000000001", as_of="2023-12-01",
                               norm=build_filer())
-    assert res["gate_version"] == signals_v3.GATE_VERSION == "3.1.0"
+    assert res["gate_version"] == signals_v3.GATE_VERSION == "3.2.0"
 
 
 # --------------------------------------------------- per-diagnostic attribution

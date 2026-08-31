@@ -899,6 +899,30 @@ SUMMED_METRICS: dict[str, list[list[str]]] = {
     ],
 }
 
+# Which of a metric's own groups a candidate concept ALREADY CONTAINS.
+#
+# us-gaap:LongTermDebt is the all-in figure -- noncurrent plus the current
+# maturities -- and it sits in group 0 as the fallback for
+# LongTermDebtNoncurrent. On any filing that tags LongTermDebt but not the
+# noncurrent split, the old code added group 1's current maturities to a number
+# that already held them. Jefferies (CIK 0000096223) at period end 2012-12-31:
+# the 10-K of 2013-02-25 gave 918,126,000 noncurrent + 440,569,000 current =
+# 1,358,695,000; the 10-Q of 2013-05-09 tagged only LongTermDebt 1,358,695,000,
+# and the next vintage came out 1,799,264,000 -- the current portion counted
+# twice, +32.4% of debt the filer never borrowed, which as_of() then served as
+# the point-in-time total. It needs no vintage mismatch either: WBD's single
+# 2024-06-30 10-Q tags LongTermDebt and LongTermDebtCurrent and never the
+# noncurrent split, and read 44,627,000,000 against a true 40,958,000,000.
+#
+# That the tag is all-in is measured, not assumed: of 28,953 (end, filed)
+# observations across the 1,498 cached filers that tag all three concepts,
+# 23,130 satisfy LongTermDebt == Noncurrent + Current and only 657 satisfy
+# LongTermDebt == Noncurrent. ShortTermBorrowings is NOT subsumed -- commercial
+# paper and revolver draws are not maturities of long-term debt.
+SUBSUMED_GROUPS: dict[str, dict[str, tuple[int, ...]]] = {
+    "total_debt": {"LongTermDebt": (1,)},
+}
+
 FLOW_METRICS = {
     "revenue",
     "cost_of_revenue",
@@ -1022,14 +1046,31 @@ def _quarter_only_rows(rows: list[dict]) -> list[dict]:
     return out
 
 
-def _summed_pit(facts: dict, metric: str, groups: list[list[str]]) -> list[dict]:
+def _summed_pit(facts: dict, metric: str, groups: list[list[str]],
+                subsumed: dict[str, tuple[int, ...]] | None = None) -> list[dict]:
     """Sum independent components at each period end.
 
     A missing component contributes zero rather than voiding the total -- a
     filer with no short-term borrowings simply does not tag the concept. A
     missing FIRST group (the primary component) does void the period, since
     that means the metric genuinely is not reported.
+
+    `subsumed` (SUBSUMED_GROUPS) keeps an all-in tag from being summed with its
+    own components: a filing that reports LongTermDebt and separately the
+    current maturities inside it must not have the maturities added twice.
+
+    Two things travel on each vintage for the benefit of restate.diff, which
+    could not previously tell a revision from a component arriving:
+      * `components`, concept -> the value it contributed, so a total that
+        moved only because a filer newly tagged ShortTermBorrowings is not
+        reported as a 971x revision of a figure nobody revised;
+      * `form`/`fy`/`fp` taken from the component vintage actually filed on
+        this date rather than from the primary component's newest. Hancock
+        Whitney's 2012-02-29 vintage was created by a 10-K/A and reported
+        form='10-K', on_amendment=False, because the primary component's
+        newest vintage was a year old and belonged to a different filing.
     """
+    subsumed = subsumed or {}
     per_group: list[dict[str, dict]] = []
     for group in groups:
         rows = _pit_rows(_raw_rows(facts, metric, group))
@@ -1052,17 +1093,29 @@ def _summed_pit(facts: dict, metric: str, groups: list[list[str]]) -> list[dict]
             head = derive.newest_at(primary.get("vintages", [primary]), d)
             if head is None:
                 continue  # the primary component is not public yet -> no total
-            total, sources, concepts = 0.0, [], []
-            for g in per_group:
+            hits: dict[int, dict] = {}
+            for gi, g in enumerate(per_group):
                 row = g.get(end)
                 if row is None:
                     continue
                 hit = derive.newest_at(row.get("vintages", [row]), d)
                 if hit is None:
                     continue  # component not yet filed -> contributes zero
+                hits[gi] = hit
+            covered = {
+                gi for h in hits.values() for gi in subsumed.get(h["concept"], ())
+            }
+            total, sources, components = 0.0, [], {}
+            for gi in sorted(hits):
+                if gi in covered:
+                    continue  # already inside an all-in tag we are adding
+                hit = hits[gi]
                 total += hit["value"]
                 sources += hit.get("sources", [])
-                concepts.append(hit["concept"])
+                components[hit["concept"]] = hit["value"]
+            src = next(
+                (hits[gi] for gi in sorted(hits) if hits[gi].get("filed") == d), head
+            )
             vints.append(
                 {
                     "metric": metric,
@@ -1070,11 +1123,12 @@ def _summed_pit(facts: dict, metric: str, groups: list[list[str]]) -> list[dict]
                     "start": None,
                     "end": end,
                     "value": total,
-                    "fy": head.get("fy"),
-                    "fp": head.get("fp"),
-                    "form": head.get("form"),
+                    "fy": src.get("fy"),
+                    "fp": src.get("fp"),
+                    "form": src.get("form"),
                     "filed": d,
-                    "concept": "+".join(concepts),
+                    "concept": "+".join(components),
+                    "components": components,
                     "origin": "summed",
                     "sources": [s for s in sources if s],
                 }
@@ -1120,7 +1174,7 @@ def normalize(cik: str, facts: dict | None = None) -> dict[str, list[dict]]:
             out[metric] = result
 
     for metric, groups in SUMMED_METRICS.items():
-        rows = _summed_pit(facts, metric, groups)
+        rows = _summed_pit(facts, metric, groups, SUBSUMED_GROUPS.get(metric))
         if rows:
             out[metric] = rows
 

@@ -361,6 +361,7 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
         ocf_rows, len(ocf_rows) - 1, "operating_cash_flow",
         require_comparable_span=True)
     def_rows = series(norm, "deferred_revenue", "PIT")
+    def_now = def_rows[-1] if def_rows else None
     d.deferred_rev_yoy, def_why = _yoy_explained(
         def_rows, len(def_rows) - 1, "deferred_revenue")
 
@@ -445,14 +446,36 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
         d.inventory_vs_revenue = inv_yoy - d.revenue_yoy
     else:
         note("inventory_vs_revenue", inv_yoy_why or rev_yoy_why)
+    # The same stale-balance defect the dio guard above was written for, one
+    # diagnostic over: _yoy_explained only checks the 330-400 day gap BETWEEN
+    # the two deferred balances, never that the newer one is near the revenue
+    # quarter it is subtracted from. WBD at cutoff 2013-08-15 had deferred
+    # revenue rows only at 2008-12-31 and 2009-12-31, so a 2009-vs-2008 change
+    # of -2.2% was set against revenue growth for the quarter ending
+    # 2013-06-30 and published as a 4.26-sigma "forward bookings breaking from
+    # trend" -- a break the arithmetic does not describe.
     if d.deferred_rev_yoy is not None and d.revenue_yoy is not None:
-        d.deferred_vs_revenue_gap = d.deferred_rev_yoy - d.revenue_yoy
+        if _aligned(def_now, d.period):
+            d.deferred_vs_revenue_gap = d.deferred_rev_yoy - d.revenue_yoy
+        else:
+            note("deferred_vs_revenue_gap", reasons.Abstention(
+                reasons.PERIOD_MISALIGNED,
+                "the deferred revenue balance and the revenue quarter it "
+                "would be compared against describe different moments",
+                "deferred_revenue"))
     else:
         note("deferred_vs_revenue_gap", def_why or rev_yoy_why)
 
-    # balance sheet
+    # balance sheet. pit() returns the NEWEST balance unconditionally, which is
+    # not necessarily a recent one: CHH at cutoff 2013-08-15 divided a
+    # 2012-06-30 total_debt balance, a full year stale, by a cash-flow year
+    # ending 2013-06-30. Both legs are gated the way dso and dio are, and
+    # net_debt itself is only formed from two balances that describe the same
+    # moment -- a debt figure from one year minus a cash figure from the next
+    # is a number no filing contains.
     cash, debt = pit(norm, "cash"), pit(norm, "total_debt")
-    if cash and debt:
+    ocf_end = ttm_end(norm, "operating_cash_flow")
+    if cash and debt and _aligned(cash, ocf_end) and _aligned(debt, ocf_end):
         d.net_debt = debt["value"] - cash["value"]
         if ocf_ttm and ocf_ttm > 0:
             d.net_debt_to_ttm_ocf = d.net_debt / ocf_ttm
@@ -462,9 +485,17 @@ def diagnose(ticker: str, cik: str, norm: dict) -> Diagnostics:
                 "cash from operations over the trailing year is zero or "
                 "negative, so debt-to-cash has no meaning",
                 "operating_cash_flow"))
-    else:
+    elif not cash or not debt:
         note("net_debt_to_ttm_ocf", _pit_why(
             cash if not cash else debt, "cash" if not cash else "total_debt"))
+    elif ocf_end is None:
+        note("net_debt_to_ttm_ocf", ocf_ttm_why)
+    else:
+        note("net_debt_to_ttm_ocf", reasons.Abstention(
+            reasons.PERIOD_MISALIGNED,
+            "the cash and debt balances and the trailing year of operating "
+            "cash flow they would be divided by describe different moments",
+            "total_debt"))
 
     # FIX §3: a share-count move this large is a corporate action, not dilution.
     # No span guard here: a weighted-AVERAGE share count over 14 weeks

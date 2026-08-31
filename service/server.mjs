@@ -23,7 +23,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FEED = process.env.LEDGERLINE_FEED ??
   path.join(HERE, "..", "reports", "feed", "signals.jsonl");
 const PORT = Number(process.env.PORT ?? 8787);
-const HOST = "127.0.0.1"; // loopback only, deliberately not configurable
+const HOST = "localhost"; // loopback only, deliberately not configurable --
+// the name rather than the IPv4 literal, so Node binds both 127.0.0.1 and
+// ::1 and either spelling of the address answers. Still never reachable
+// from another machine.
 
 let cache = { mtimeMs: -1, size: -1, records: [] };
 

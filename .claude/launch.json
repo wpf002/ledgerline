@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ledgerline-service",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["service/server.mjs"],
+      "port": 8787
+    }
+  ]
+}

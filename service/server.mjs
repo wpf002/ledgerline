@@ -135,6 +135,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (parts.length === 0) {
+    // The front door. A person landing on the root gets a page, not an
+    // "unknown path" error -- the JSON routes stay exactly as they were.
+    let page;
+    try {
+      page = fs.readFileSync(path.join(HERE, "index.html"));
+    } catch {
+      send(res, 404, { error: "index.html missing beside server.mjs", validation });
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(page);
+    return;
+  }
+
   if (parts[0] === "validation" && parts.length === 1) {
     send(res, 200, validation);
   } else if (parts[0] === "digest" && parts.length === 1) {

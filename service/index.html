@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledgerline</title>
+<style>
+  :root {
+    --paper:#FAFBF8; --surface:#FFFFFF; --surface-2:#F1F4EF;
+    --ink:#15191A; --ink-2:#3D4644; --ink-3:#6C7772;
+    --rule:#DBE1D9; --rule-soft:#E8EDE6;
+    --accent:#1F5D4C; --accent-wash:#E7F0EB;
+    --flag:#A6321E; --flag-wash:#F8E9E5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:#0E1211; --surface:#151A19; --surface-2:#1B2220;
+      --ink:#E9EDE8; --ink-2:#B6C0BA; --ink-3:#7E8A85;
+      --rule:#2A3331; --rule-soft:#212927;
+      --accent:#63B79B; --accent-wash:#16302A;
+      --flag:#E2705A; --flag-wash:#2E1A16;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+  h1 { font-size: 1.7rem; letter-spacing: -.01em; margin: 0 0 .25rem;
+       font-family: ui-serif, Georgia, serif; font-weight: 600; }
+  .sub { color: var(--ink-3); margin: 0 0 1.5rem; }
+  .banner {
+    border-left: 3px solid var(--flag); background: var(--flag-wash);
+    padding: .9rem 1.1rem; border-radius: 0 3px 3px 0; margin: 0 0 1.75rem;
+    font-size: .92rem; max-width: 74ch;
+  }
+  .banner b { font-family: ui-monospace, Menlo, monospace; font-size: .8rem;
+              letter-spacing: .07em; color: var(--flag); display: block;
+              margin-bottom: .3rem; }
+  h2 { font-size: 1.05rem; border-bottom: 1px solid var(--rule);
+       padding-bottom: .4rem; margin: 2rem 0 .9rem; }
+  .stats { display: flex; flex-wrap: wrap; gap: 0; border: 1px solid var(--rule);
+           border-radius: 3px; overflow: hidden; background: var(--surface); }
+  .stats div { flex: 1 1 auto; padding: .6rem 1rem; border-right: 1px solid var(--rule); }
+  .stats div:last-child { border-right: 0; }
+  .stats dt { font: 600 .62rem/1.4 ui-monospace, Menlo, monospace;
+              letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
+              margin: 0 0 .1rem; }
+  .stats dd { margin: 0; font-family: ui-monospace, Menlo, monospace;
+              font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .expect { background: var(--surface-2); border-radius: 3px; padding: .7rem 1rem;
+            margin: 1rem 0; font-size: .92rem; max-width: 74ch; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem;
+          background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; }
+  th { text-align: left; font: 600 .62rem/1.4 ui-monospace, Menlo, monospace;
+       letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
+       padding: .55rem .9rem; border-bottom: 1px solid var(--rule);
+       background: var(--surface-2); }
+  td { padding: .6rem .9rem; border-bottom: 1px solid var(--rule-soft);
+       vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.num { font-family: ui-monospace, Menlo, monospace;
+           font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.tick { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+  .quiet { color: var(--ink-3); font-size: .88rem; }
+  form { display: flex; gap: .5rem; margin: .25rem 0 1rem; }
+  input[type=text] {
+    flex: 0 1 14rem; padding: .5rem .7rem; border: 1px solid var(--rule);
+    border-radius: 3px; background: var(--surface); color: var(--ink);
+    font: inherit; text-transform: uppercase;
+  }
+  button { padding: .5rem 1rem; border: 0; border-radius: 3px;
+           background: var(--accent); color: var(--paper); font: 600 .9rem inherit;
+           cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent);
+                                             outline-offset: 2px; }
+  #lookup-out { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
+                font-size: .82rem; background: var(--surface);
+                border: 1px solid var(--rule); border-radius: 3px;
+                padding: 1rem; display: none; overflow-x: auto; }
+  a { color: var(--accent); }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
+           font-size: .8rem; color: var(--ink-3); }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: .85em;
+         background: var(--surface-2); padding: .1em .35em; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Ledgerline</h1>
+  <p class="sub">Reads companies' SEC filings and flags numbers that break from
+    that company's own past.</p>
+
+  <div class="banner" id="banner"><b>LOADING…</b></div>
+
+  <h2>Latest run</h2>
+  <dl class="stats" id="stats"></dl>
+  <div class="expect" id="expect"></div>
+
+  <h2>Flagged</h2>
+  <div id="fires"></div>
+
+  <h2>Look up a company</h2>
+  <form id="lookup">
+    <input type="text" id="ticker" placeholder="e.g. FMC" aria-label="Ticker">
+    <button type="submit">Show saved assessments</button>
+  </form>
+  <pre id="lookup-out"></pre>
+
+  <footer>
+    Local read service. It re-serves what the Python emitted and computes
+    nothing. Raw feeds: <a href="/digest">/digest</a> ·
+    <a href="/signals">/signals</a> · <a href="/validation">/validation</a>.
+    CLI: <code>ledgerline explain TICKER</code>.
+  </footer>
+</div>
+
+<script>
+// Plain names mirror ledgerline/render.py PLAIN. Display-only duplication:
+// the server computes nothing, so this file may not import from the package.
+const PLAIN = {
+  CASH_CONVERSION_GAP: "cash-vs-sales", ACCRUAL_RATIO: "paper-vs-cash profit",
+  RECEIVABLES_VS_REVENUE: "unpaid-bills", INVENTORY_VS_REVENUE: "stockpile",
+  DSO: "collection-days", DIO: "shelf-days",
+  DEFERRED_VS_REVENUE_GAP: "prepaid-orders", REVENUE_ACCEL: "growth-brake",
+  GROSS_MARGIN: "product-margin", OP_MARGIN: "operating-margin",
+  OCF_TO_REVENUE: "cash-per-sale", NET_DEBT_TO_TTM_OCF: "debt-vs-cash",
+  DILUTION_YOY: "share-creep",
+};
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function main() {
+  let d;
+  try {
+    const r = await fetch("/digest");
+    d = await r.json();
+    if (!r.ok) throw new Error(d.hint || d.error || r.status);
+  } catch (e) {
+    $("banner").innerHTML = "<b>SERVICE NOT READY</b>" + esc(e.message ?? e);
+    return;
+  }
+  const v = d.validation;
+  // The verdict renders before anything else on the page, always.
+  $("banner").innerHTML = "<b>" + esc(v.status) + " — tested "
+    + esc(v.scored_on) + "</b>" + esc(v.statement);
+
+  const run = d.run;
+  const rows = [
+    ["run", run.run_date], ["assessed", run.scoreable],
+    ["cannot assess", run.unscoreable], ["flagged", run.gated_in],
+  ];
+  $("stats").innerHTML = rows.map(([k, val]) =>
+    "<div><dt>" + esc(k) + "</dt><dd>" + esc(val) + "</dd></div>").join("");
+
+  // Honesty pin mirrored from the digest: the chance-alone expectation is
+  // shown before a single ticker.
+  $("expect").textContent = "At the measured false-alarm rate, about "
+    + Number(d.expected_false_positives_if_nothing_wrong).toFixed(1) + " of the "
+    + run.scoreable + " assessed companies would be expected to be flagged even "
+    + "if nothing were wrong. Read the list below with that in mind.";
+
+  const fires = d.fires || [];
+  $("fires").innerHTML = !fires.length
+    ? '<p class="quiet">Nothing flagged in this run.</p>'
+    : "<table><tr><th>company</th><th>score of 100</th><th>measures out of line</th></tr>"
+      + fires.map((f) => "<tr><td class='tick'>" + esc(f.ticker)
+        + "</td><td class='num'>" + esc(f.score) + "</td><td>"
+        + (f.flags || []).map((x) => esc(PLAIN[x] || x)).join(", ")
+        + "</td></tr>").join("") + "</table>";
+}
+
+$("lookup").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const t = $("ticker").value.trim().toUpperCase();
+  if (!t) return;
+  const out = $("lookup-out");
+  out.style.display = "block";
+  out.textContent = "Loading " + t + "…";
+  try {
+    const r = await fetch("/signals/" + encodeURIComponent(t));
+    const d = await r.json();
+    const recs = d.records || [];
+    if (!recs.length) {
+      out.textContent = t + ": no saved assessments. It may not be on the "
+        + "watchlist, or no run has covered it yet.";
+      return;
+    }
+    const last = recs[recs.length - 1];
+    out.textContent = "Latest of " + recs.length + " saved assessments:\n\n"
+      + JSON.stringify(last, null, 2);
+  } catch (e) {
+    out.textContent = "Could not load " + t + ": " + (e.message ?? e);
+  }
+});
+
+main();
+</script>
+</body>
+</html>

@@ -284,14 +284,21 @@ function serveOverview(res) {
     return;
   }
   if (records.length === 0) {
-    sendHtml(res, 503, pages.message({
+    // 200, not 503. Nothing assessed yet is the normal state of a fresh
+    // install, because scans keep figures current without assessing anything.
+    // The cold-clone test caught this: a 503 here read as a broken service.
+    // The old advice, `scan --score`, only assesses companies that filed that
+    // day, so on a new install it usually left the page empty anyway.
+    sendHtml(res, 200, pages.message({
       title: "Overview", current: "/", validation: anyValidation(),
-      heading: "The assessment feed is empty",
+      heading: "Nothing has been assessed yet",
       paragraphs: [
-        "There are no saved assessments to show, and no validation evidence " +
-        "to serve with them.",
-        "Assess something first: <code>ledgerline scan --score</code>, then " +
-        "<code>ledgerline publish</code>.",
+        "Scans keep each watched company's figures current but don't assess " +
+        "anything. Assessing is opt-in, because this detector failed its own test.",
+        "Assess one company and save the result: " +
+        "<code>ledgerline score FMC --emit</code>, then " +
+        "<code>ledgerline publish</code>. The watchlist and company pages work " +
+        "without it.",
       ],
     }));
     return;

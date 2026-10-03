@@ -667,3 +667,17 @@ def test_the_watchlist_header_tells_unchecked_apart_from_checked_and_stuck():
 
     fine = header(n_assessable=1, n_checked=1, assessable=True)
     assert "have been checked and can be assessed" in fine
+
+
+def test_nothing_assessed_yet_is_a_first_run_state_not_an_outage(site):
+    """The cold-clone test found it: a fresh install that has watched, fetched
+    and scanned has no saved assessments, because scans don't assess. The
+    overview answered 503, which reads as a broken service, and advised
+    `scan --score`, which only assesses companies that filed that day."""
+    with open(os.path.join(site.feed_dir, "signals.jsonl"), "w"):
+        pass
+    status, _, body = site.request("/")
+    assert status == 200
+    assert "Nothing has been assessed yet" in body
+    assert "score FMC --emit" in body
+    assert body.index("UNVALIDATED-KILL") < body.index("Nothing has been assessed yet")

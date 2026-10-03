@@ -1,0 +1,165 @@
+{
+ "created": "2026-10-03",
+ "hypotheses": {
+  "h0": {
+   "arithmetic_sha256": "402143ef4f81ccd80484a3611321a414732ef163bf781841696e93989eb71e6e",
+   "commit": "e53912fc1dc306f7f374fa295ed5cd5a0a3839b2",
+   "comparator_on": [],
+   "created": "2026-08-30",
+   "decision_rule": {
+    "censored_treatment": "excluded_from_both",
+    "excluded_sectors": "SIC 6000-6599, 6700-6799 (financials, real estate, REITs)",
+    "kill_if_any_fails": true,
+    "label": "fundamental_deterioration_2of5_within_4q",
+    "max_creditable_lead_months": 24,
+    "max_false_positive_rate_per_quarter": 0.04,
+    "min_controls": 200,
+    "min_controls_scope": "holdout",
+    "min_median_lead_months": 6,
+    "min_positive_hit_rate": 0.6,
+    "min_positives": 40,
+    "min_regimes": 4,
+    "must_beat_baseline": "ttm_ocf_negative_and_net_debt_positive",
+    "notes": "Lead is measured from the gate's fire date to the FILING date of the quarter that tripped the deterioration label, not to the period end. A quarter ending 3/31 is not public until it is filed. Price drawdown is reported but is not part of the rule.",
+    "regime_window": "2011-2025",
+    "report_false_positive_rate_per_filer": true
+   },
+   "decision_rule_sha256": "3bdba2fd784dc06636e76a7b6870764de8a9eb1de1abbd517a7b5bccbe1653ef",
+   "description": "Thirteen XBRL diagnostics, robust z against each company's own history, ridge-logistic weights fitted on the tuning split.",
+   "entry_sha256": "b4baaf822cd4ccabba2e2760708583f34a3add5ffa10fc8d05e809892352184a",
+   "fingerprint": {
+    "coverage_min": 0.9,
+    "max_baseline": 20,
+    "min_baseline_n": 8,
+    "min_flags": 2,
+    "min_history": 12,
+    "required_coverage": [
+     "revenue",
+     "operating_cash_flow",
+     "net_income"
+    ],
+    "score_divisor": 2.2178,
+    "threshold": 45.0,
+    "tracked": {
+     "accrual_ratio": {
+      "direction": 1,
+      "scale_floor": 0.01,
+      "weight": 0.1548
+     },
+     "cash_conversion_gap": {
+      "direction": 1,
+      "scale_floor": 0.05,
+      "weight": 0.2881
+     },
+     "deferred_vs_revenue_gap": {
+      "direction": -1,
+      "scale_floor": 0.05,
+      "weight": 0.0
+     },
+     "dilution_yoy": {
+      "direction": 1,
+      "scale_floor": 0.005,
+      "weight": 0.0949
+     },
+     "dio": {
+      "direction": 1,
+      "scale_floor": 3.0,
+      "weight": 0.2221
+     },
+     "dso": {
+      "direction": 1,
+      "scale_floor": 2.0,
+      "weight": 0.0298
+     },
+     "gross_margin": {
+      "direction": -1,
+      "scale_floor": 0.005,
+      "weight": 0.3818
+     },
+     "inventory_vs_revenue": {
+      "direction": 1,
+      "scale_floor": 0.05,
+      "weight": 0.1297
+     },
+     "net_debt_to_ttm_ocf": {
+      "direction": 1,
+      "scale_floor": 0.25,
+      "weight": 0.0
+     },
+     "ocf_to_revenue": {
+      "direction": -1,
+      "scale_floor": 0.01,
+      "weight": 0.1025
+     },
+     "op_margin": {
+      "direction": -1,
+      "scale_floor": 0.005,
+      "weight": 0.0042
+     },
+     "receivables_vs_revenue": {
+      "direction": 1,
+      "scale_floor": 0.05,
+      "weight": 0.2305
+     },
+     "revenue_accel": {
+      "direction": -1,
+      "scale_floor": 0.02,
+      "weight": 0.3539
+     }
+    },
+    "z_cap": 2.5,
+    "z_trigger": 2.0
+   },
+   "gate_version": "phase0",
+   "id": "h0",
+   "label_rule": "fundamental_deterioration_2of5_within_4q",
+   "name": "Phase 0 gate",
+   "registration": null,
+   "result": {
+    "checks": {
+     "beats_naive_baseline": {
+      "limit": 0.005132699048572859,
+      "pass": false,
+      "value": 0.038265639284315006
+     },
+     "false_positive_rate_per_quarter": {
+      "limit": 0.04,
+      "pass": true,
+      "value": 0.0383
+     },
+     "median_lead_months": {
+      "limit": 6,
+      "pass": true,
+      "value": 9
+     },
+     "positive_hit_rate": {
+      "limit": 0.6,
+      "pass": false,
+      "value": 0.287
+     },
+     "regime_coverage": {
+      "limit": 4,
+      "pass": true,
+      "value": 6
+     },
+     "sample_size": {
+      "limit": {
+       "controls": 200,
+       "positives": 40
+      },
+      "pass": true,
+      "value": {
+       "controls": 209,
+       "positives": 178
+      }
+     }
+    },
+    "false_positive_rate_per_filer": 0.512,
+    "set": "holdout",
+    "verdict": "KILL",
+    "writeup": "reports/PHASE0.md"
+   },
+   "status": "scored"
+  }
+ }
+}

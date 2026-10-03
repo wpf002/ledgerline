@@ -121,7 +121,8 @@ print(sys.argv[2] + json.dumps({"verdict": r["verdict"], "baseline": r.get("base
 
 
 def run_at_commit(commit: str, *, cache_dir: str | None = None,
-                  timeout: int = 3600, script: str = _SCRIPT) -> dict:
+                  timeout: int = 3600, script: str = _SCRIPT,
+                  args: tuple[str, ...] = ()) -> dict | list:
     """Score the holdout with the code at `commit`, in an isolated worktree.
 
     The worktree gets its own reports/ and state.db, so nothing in this
@@ -138,7 +139,7 @@ def run_at_commit(commit: str, *, cache_dir: str | None = None,
         os.symlink(cache_dir, os.path.join(tree, "ledgerline", "data", "cache"))
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         env["PYTHONHASHSEED"] = "0"
-        proc = subprocess.run([sys.executable, "-c", script, tree, MARKER],
+        proc = subprocess.run([sys.executable, "-c", script, tree, MARKER, *args],
                               cwd=tree, env=env, capture_output=True, text=True,
                               timeout=timeout)
         if proc.returncode != 0:
@@ -204,5 +205,6 @@ def reproduce(*, fetch_missing: bool = True) -> Report:
             "LEDGERLINE_UA and the network, then run again."
         )
     result = run_at_commit(PHASE0_COMMIT)
+    assert isinstance(result, dict)
     report.comparisons = compare(frozen, result["verdict"])
     return report

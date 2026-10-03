@@ -79,6 +79,7 @@ from . import cost as cost_mod
 from . import coverage as cov
 from . import doctor as doctor_mod
 from . import groups as group_mod
+from . import hypothesis as hyp_mod
 from . import narrate as narr
 from . import peers as peer_mod
 from . import provenance as prov
@@ -103,6 +104,12 @@ retest_app = typer.Typer(
          "peeked at. Fresh data only accrues forward -- every month not "
          "reserved is a month lost.")
 app.add_typer(retest_app, name="retest")
+hypothesis_app = typer.Typer(
+    add_completion=False,
+    help="Hypotheses: a named claim about the filings, registered before the "
+         "data that tests it exists. h0 is the Phase 0 gate, which failed.",
+)
+app.add_typer(hypothesis_app, name="hypothesis")
 
 
 def _resolve(ticker: str) -> str | None:
@@ -768,6 +775,141 @@ def reproduce(fetch: bool = typer.Option(True, "--fetch/--no-fetch",
                    "re-derived from its own code and data. That's a finding; record "
                    "it before doing anything else.")
         raise typer.Exit(2)
+
+
+def _hyp_line(h: dict) -> str:
+    state = {"draft": "draft", "registered": "registered", "scored": "scored"}[h["status"]]
+    extra = ""
+    if h["status"] == "scored":
+        extra = f" on the {h['result']['set']}, verdict {h['result']['verdict']}"
+    elif h["status"] == "registered":
+        r = h["registration"]
+        extra = (f" against {r['reserved']} with alpha {r['alpha']}, "
+                 f"scoreable from {r['scoreable_from']}")
+    return f"  {h['id']:4} {h['name']:<34} {state}{extra}"
+
+
+@hypothesis_app.command("init")
+def hypothesis_init():
+    """Create the registry with h0. Only for a brand-new project; refuses if
+    it exists."""
+    try:
+        hyp_mod.init()
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    typer.echo("Created ledgerline/data/hypotheses.json with h0. Commit it.")
+
+
+@hypothesis_app.command("status")
+def hypothesis_status():
+    """Every hypothesis: draft, registered, or scored."""
+    try:
+        reg = hyp_mod.load()
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    for h in sorted(reg["hypotheses"].values(), key=lambda x: int(x["id"][1:])):
+        typer.echo(_hyp_line(h))
+        if h["id"] == "h0" and h["comparator_on"]:
+            typer.echo(f"       also the comparator on: {', '.join(h['comparator_on'])}")
+    spent = retest.alpha_spent()
+    typer.echo(f"\nError budget: {spent:.3f} of {retest.ALPHA_BUDGET:.3f} committed, "
+               "shared by every hypothesis and never refilled.")
+    try:
+        for name in retest.load_retests().get("reserved", {}):
+            deadline = hyp_mod.registration_deadline(name)
+            if date.today().isoformat() < deadline:
+                typer.echo(f"Registration against {name} closes {deadline}.")
+            else:
+                typer.echo(f"Registration against {name} is closed (first checkpoint "
+                           f"{deadline}). Reserve a new set for new hypotheses.")
+    except RuntimeError:
+        pass
+
+
+@hypothesis_app.command("new")
+def hypothesis_new(hid: str = typer.Argument(..., help="h1, h2, ..."),
+                   name: str = typer.Option(..., help="What it tests, in a few words."),
+                   description: str = typer.Option("", help="One or two sentences.")):
+    """Draft a hypothesis from the committed code at HEAD.
+
+    Commit your change to the gate first. The draft records the commit, the
+    gate's constants, and a hash of its outputs on the 40 pinned test cases,
+    and refuses if that hash matches an existing hypothesis.
+    """
+    try:
+        h = hyp_mod.new(hid, name, description)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    typer.echo(f"Drafted {h['id']} at commit {h['commit'][:12]} "
+               f"(gate {h['gate_version']}). Register it before its data exists:")
+    typer.echo(f"  ledgerline hypothesis register {h['id']} --against r1 "
+               "--alpha 0.025 --note \"what you already knew\"")
+
+
+@hypothesis_app.command("register")
+def hypothesis_register(hid: str = typer.Argument(...),
+                        against: str = typer.Option(..., help="Reserved set, e.g. r1."),
+                        alpha: float = typer.Option(..., help="Share of the 0.05 error "
+                                                    "budget this test spends."),
+                        note: str = typer.Option(..., help="What you knew when you "
+                                                 "designed it. Mandatory.")):
+    """Commit a draft to a reserved set. Once, before the set's first checkpoint."""
+    try:
+        h = hyp_mod.register(hid, against, alpha, note)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    r = h["registration"]
+    typer.echo(f"Registered {hid} against {r['reserved']}, alpha {r['alpha']}. "
+               f"It can be scored from {r['scoreable_from']}. h0 is scored on the "
+               "same set as the comparator.")
+    typer.echo("Commit ledgerline/data/hypotheses.json and retests.json now.")
+
+
+@hypothesis_app.command("compare")
+def hypothesis_compare(a: str = typer.Argument(...), b: str = typer.Argument(...)):
+    """Two hypotheses side by side, and whether their results can be compared."""
+    try:
+        c = hyp_mod.compare(a, b)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    typer.echo(f"{a}: {c['a']['name']} (commit {c['a']['commit'][:12]})")
+    typer.echo(f"{b}: {c['b']['name']} (commit {c['b']['commit'][:12]})\n")
+    if c["same_arithmetic"]:
+        typer.echo("Same arithmetic: they score the 40 pinned cases identically.")
+    else:
+        typer.echo("Different arithmetic: they score the 40 pinned cases differently.")
+    if c["constants_that_differ"]:
+        typer.echo("Constants that differ:")
+        for key, va, vb in c["constants_that_differ"]:
+            typer.echo(f"  {key:30} {va}  ->  {vb}")
+    elif c["same_arithmetic"]:
+        typer.echo("Every constant is identical too.")
+    else:
+        typer.echo("Every constant is identical, so the difference is in the code.")
+    typer.echo("Same pass mark." if c["same_decision_rule"]
+               else "DIFFERENT pass mark: results aren't on identical terms.")
+    if c["results_comparable"]:
+        typer.echo(f"Both scored on {c['set_a']}: results can be compared directly.")
+    else:
+        typer.echo(f"Results can't be compared yet: {a} is on {c['set_a'] or 'nothing'}, "
+                   f"{b} on {c['set_b'] or 'nothing'}. A fair comparison scores both on "
+                   "the same reserved set, which is why h0 rides along on every set "
+                   "a hypothesis registers against.")
+
+
+@hypothesis_app.command("score")
+def hypothesis_score(hid: str = typer.Argument(...)):
+    """Score a registered hypothesis on its reserved set, once."""
+    try:
+        hyp_mod.score(hid)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
 
 
 @app.command()

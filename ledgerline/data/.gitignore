@@ -22,3 +22,5 @@
 # alpha budget they draw on. A registry that lives only on the machine that
 # reserved the set is not a registry -- same argument as prereg.json.
 !retests.json
+# Registrations are commitments; they live in git.
+!hypotheses.json

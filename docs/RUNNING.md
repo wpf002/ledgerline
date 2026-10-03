@@ -114,3 +114,37 @@ re-run the validation experiment. Most are one-shot by design: the split and
 the pass mark refuse to be rewritten, and the sealed test half has already
 been scored (once — it missed). Re-testing a revised detector needs a new
 sealed set; see `ROADMAP.md`.
+
+## Reproduce the Phase 0 result
+
+```bash
+ledgerline reproduce
+```
+
+Checks out the commit that scored the holdout
+(`e53912fc1dc306f7f374fa295ed5cd5a0a3839b2`) into a throwaway git worktree,
+runs its own scoring against your filing cache, and compares all 22 published
+numbers in `ledgerline/data/phase0.json`. Takes about ten minutes. Writes
+nothing in your checkout.
+
+It runs the old commit because the current code scores differently: the audit
+fixes after Phase 0 changed the arithmetic while leaving every constant the
+same. The constants alone don't identify the gate that produced 0.287. The
+commit does.
+
+On a fresh clone the cache is empty. `reproduce` downloads the 387 holdout
+companies' filing histories first (about a minute at the SEC rate limit, needs
+`LEDGERLINE_UA` in `.env`). Those downloads are today's files, carrying filings
+made after Phase 0, so a match also shows the point-in-time handling ignored
+them.
+
+Last run 2026-10-03: all 22 match to the last digit.
+
+## Pinned arithmetic
+
+`tests/unit/test_golden.py` compares the scoring outputs for ten real companies
+at four cutoffs against `tests/fixtures/golden/golden.json`, on every test run.
+If the numbers move and `GATE_VERSION` didn't, the test fails: that's an
+arithmetic change nobody declared. For an intended change, bump `GATE_VERSION`
+in `signals_v3.py`, run `python scripts/golden.py`, and say in the commit what
+moved and why.

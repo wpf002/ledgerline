@@ -82,6 +82,7 @@ from . import groups as group_mod
 from . import narrate as narr
 from . import peers as peer_mod
 from . import provenance as prov
+from . import reproduce as repro_mod
 from . import schedule as schedule_mod
 from . import status as phase0
 from . import track as trackrec
@@ -724,6 +725,49 @@ def score(ticker: str, as_of: str = typer.Option(None, help="YYYY-MM-DD; uses on
                    "it; saving the same assessment twice records nothing "
                    "new).", err=True)
     typer.echo(json.dumps(res, indent=2))
+
+
+@app.command()
+def reproduce(fetch: bool = typer.Option(True, "--fetch/--no-fetch",
+                                         help="Download any holdout company's "
+                                              "filing history that isn't cached. "
+                                              "Needed on a fresh clone.")):
+    """Re-derive the Phase 0 result from the code that produced it.
+
+    Checks out the commit that scored the holdout into a throwaway worktree,
+    runs its scoring against the shared filing cache, and compares every
+    published number with ledgerline/data/phase0.json. The current code isn't
+    used: the audit fixes since then changed the arithmetic, so it scores
+    differently. Takes a few minutes. Writes nothing in this checkout.
+    """
+    typer.echo(f"Running the holdout scoring at commit {repro_mod.PHASE0_COMMIT[:12]}, "
+               "the code that produced the Phase 0 result. This takes a few minutes.\n")
+    try:
+        report = repro_mod.reproduce(fetch_missing=fetch)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    c = report.cache
+    if c.get("fetched"):
+        typer.echo(f"Downloaded {c['fetched']} missing company histories first.\n")
+    width = max(len(x.name) for x in report.comparisons)
+    for x in report.comparisons:
+        mark = "match" if x.match else "MOVED"
+        extra = f"  (moved by {x.delta:+.6g})" if (not x.match and x.delta) else ""
+        typer.echo(f"  {mark}  {x.name:<{width}}  frozen {x.frozen}  "
+                   f"rerun {x.reproduced}{extra}")
+    typer.echo("")
+    if report.matched:
+        typer.echo(f"Reproduced. All {len(report.comparisons)} published numbers "
+                   "match to the last digit. That also shows filings added to the "
+                   "cache since 2026-08-30 didn't leak into the old cutoffs.")
+    else:
+        moved = [x for x in report.comparisons if not x.match]
+        typer.echo(f"NOT reproduced: {len(moved)} of {len(report.comparisons)} "
+                   "numbers moved. The published Phase 0 result can't currently be "
+                   "re-derived from its own code and data. That's a finding; record "
+                   "it before doing anything else.")
+        raise typer.Exit(2)
 
 
 @app.command()

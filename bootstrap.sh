@@ -180,6 +180,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # the reproduction tests check the Phase 0 commit is in history
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

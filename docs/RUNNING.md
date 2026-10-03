@@ -148,3 +148,55 @@ If the numbers move and `GATE_VERSION` didn't, the test fails: that's an
 arithmetic change nobody declared. For an intended change, bump `GATE_VERSION`
 in `signals_v3.py`, run `python scripts/golden.py`, and say in the commit what
 moved and why.
+
+## Is this machine set up?
+
+```bash
+ledgerline doctor
+```
+
+Checks Python, the package, your SEC contact address, the filing cache, the
+database, the frozen Phase 0 record, missed scans, both background jobs, the
+published pages and the read service. Every problem line says what to run.
+
+## Background jobs
+
+```bash
+ledgerline schedule install     # weekday scan at 21:30 + the read service
+ledgerline schedule status
+ledgerline schedule uninstall
+```
+
+macOS only (launchd). If the machine is asleep at 21:30, the scan runs when it
+wakes, and `scan --catch-up` reads every daily filing list since the last
+completed scan, so nothing is skipped. On other systems `schedule install`
+prints the cron line to add instead.
+
+## Hypotheses
+
+```bash
+ledgerline hypothesis status
+ledgerline hypothesis new h1 --name "what it tests"
+ledgerline hypothesis register h1 --against r1 --alpha 0.025 --note "what you knew"
+ledgerline hypothesis compare h0 h1
+```
+
+A hypothesis is the scoring code at a commit. Commit your change to the gate,
+then `new` records the commit, the gate's constants, and a hash of its outputs
+on the 40 pinned test cases. `register` commits it to a reserved set before
+that set's data exists, drawing on one shared error budget of 0.05. h0, the
+Phase 0 gate, is scored alongside on every set as the comparator.
+
+**Registration against r1 closes 2026-11-15**, its first checkpoint. After
+that, reserve a new set (`ledgerline retest reserve`) for new hypotheses.
+
+## Checking it works on a fresh clone
+
+```bash
+scripts/cold_clone_test.sh
+```
+
+Clones committed HEAD into a temp directory, bootstraps it with an empty cache,
+and runs watch, fetch, check, scan, explain, publish and the four web pages on
+three companies. Same machine, so it shares `~/.pyenv` and the network; it
+never touches this machine's background jobs. Last run 2026-10-03: 18 of 18.

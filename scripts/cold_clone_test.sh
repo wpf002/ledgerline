@@ -49,7 +49,7 @@ step "check assessability"         "$L" check
 step "scan with catch-up"          "$L" scan --catch-up
 step "explain FMC"                 bash -c "$L explain FMC | grep -q 'FMC'"
 step "explain leads with the failed test" bash -c "$L explain FMC | head -3 | grep -qi 'test'"
-step "reproduce refuses nothing it shouldn't (dry: hypothesis status)" "$L" hypothesis status
+step "hypothesis registry loads"      "$L" hypothesis status
 step "publish"                     "$L" publish
 step "golden + unit tests pass in the clone" "$CLONE/.venv/bin/pytest" -q
 

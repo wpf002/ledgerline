@@ -472,3 +472,51 @@ command over; and a split named neither half reached the loader and came back
 as a `ValueError` traceback. All three sealed-half refusals now read the same
 words from `ledgerline/data/phase0.json`, and moving that file moves all of
 them.
+
+---
+
+## 8. Found working through ROADMAP_V1 (2026-10-03)
+
+Each of these was found by running something, not by reading code.
+
+**The Phase 0 result reproduces exactly.** `ledgerline reproduce` ran the
+commit that scored the holdout against today's cache. All 22 published numbers
+matched to the last digit. The cache by then held filings from September and
+October 2026, after every holdout cutoff, so this also shows the point-in-time
+truncation kept them out. Current code can't reproduce it: the audit fixes
+changed 1,291 lines of scoring arithmetic while every constant in
+`gate_fingerprint()` stayed the same. Constants don't identify a gate. That's
+why hypotheses are now identified by commit.
+
+**The filer registry had been empty.** `fullindex.parse_company_idx` sliced
+fields at column offsets read off company.idx's header line. The data rows
+don't follow the header, so every row failed the date check and both 2014Q1
+and 2024Q1 ingested zero rows, with no error. Its tests passed because they
+built synthetic lines to the header's positions. The 67% attrition figure in
+§6e predates this and was measured some other way. Measured now: 59% of
+2014Q1 filers were gone by 2024Q1.
+
+**The case set is short of severe deterioration.** Sizable non-financial
+companies that stopped filing between 2014 and 2024 deteriorated in 28.6% of
+cases vs 20.1% for survivors, and on three or more criteria at once in 6.3%
+vs 3.3%. This confirms the precondition for §6e's claim that 0.287 is biased
+low. It doesn't confirm the claim, which needs the gate scored on leavers and
+a new pre-registration first. `docs/research/survivorship.md`.
+
+**Footnote items are mostly tagged; the gate reads none of them.** 92% of
+tuning company-years tag at least one unusual item (impairment, restructuring,
+disposals, debt extinguishment...) as a standalone fact, 39% at ≥10% of net
+income. Material items show up before 45% of breaks vs 36% of control years.
+New Constructs' critique, that a structured pipeline can't see these items,
+doesn't hold for this data. `docs/research/footnotes.md`.
+
+**cron lost about half of September's scans** to the machine being asleep at
+21:30. Moved to launchd, which runs a missed job on wake, with `--catch-up`
+because launchd folds all missed runs into one. The first catch-up recovered
+465 revised figures.
+
+**A fresh clone hit three breaks** (`scripts/cold_clone_test.sh`): bootstrap
+required `python3` ≥ 3.11 and macOS ships 3.9; bootstrap overwrote seven
+committed config files on every run, three of which had drifted from its
+templates; the web overview answered 503 on a fresh install with nothing
+assessed. All fixed. 18 of 18 steps pass.

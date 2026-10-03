@@ -188,8 +188,11 @@ export function message({ title, current, validation, heading, paragraphs }) {
 // both -- so a replay over the practice half, the split the thresholds were
 // fitted on, rendered as "Latest run" with nothing saying otherwise.
 const REPLAY_SPLIT = {
-  tuning: " over the practice half — the companies the thresholds were fitted on —",
+  tuning: " over the practice half",
   holdout: " over the sealed test half",
+};
+const REPLAY_NOTE = {
+  tuning: "The practice half is the companies the thresholds were fitted on. ",
 };
 const LIVE_SOURCES = ["scan", "score", "emit"];
 const BACKFILL_SOURCES = ["replay"];
@@ -198,17 +201,17 @@ export function provenance(run) {
   const source = run.source || "unrecorded";
   const when = run.run_date || "an unrecorded date";
   if (BACKFILL_SOURCES.includes(source)) {
-    return "Where these numbers come from: a replay" +
-      (REPLAY_SPLIT[run.split] || "") + ` at the ${when} checkpoint, not a ` +
-      "live run. Those quarters were already available when the thresholds " +
-      "were chosen, so nothing here is evidence about companies the detector " +
-      "has not seen.";
+    return "These numbers come from a replay" +
+      (REPLAY_SPLIT[run.split] || "") + ` at the ${when} checkpoint. It's ` +
+      "not a live run. " + (REPLAY_NOTE[run.split] || "") + "Those quarters " +
+      "were already available when the thresholds were chosen, so nothing " +
+      "here is evidence about companies the detector hasn't seen.";
   }
   if (LIVE_SOURCES.includes(source)) {
-    return `Where these numbers come from: a live run on ${when}, recorded ` +
-      `as “${source}”.`;
+    return `These numbers come from a live run on ${when}, recorded as ` +
+      `“${source}”.`;
   }
-  return `Where these numbers come from: a run recorded as “${source}”` +
+  return `These numbers come from a run recorded as “${source}”` +
     (run.split ? `, over the ${run.split} half` : "") + `, dated ${when}.`;
 }
 
@@ -246,9 +249,9 @@ ${fires.length === 0
       `${list(f.flags).map((x) => esc(PLAIN[x] || x)).join(", ")}</td></tr>`)
       .join("")}</table></div>
      <p class="note">A company is flagged at 45 of 100 with at least two
-       measures out of line. The score is only meaningful against this
-       company's own past — it is not comparable between companies, and it is
-       not a probability of anything.</p>`}
+       measures out of line. The score only means something against this
+       company's own past. It can't be compared between companies, and it
+       isn't a probability of anything.</p>`}
 
 <h2>Look up a company</h2>
 <form method="get" action="/company">
@@ -292,7 +295,7 @@ function lastAssessment(c) {
   return `${head} <span class="num">${esc(l.score)} of 100</span><br>` +
     `<span class="quiet">quarter ending ${esc(l.period)}, from figures filed ` +
     `by ${esc(l.as_of)}${esc(from)}${list(l.flags).length
-      ? ` — ${list(l.flags).map(esc).join(", ")}` : ""}</span>`;
+      ? `. Out of line: ${list(l.flags).map(esc).join(", ")}` : ""}</span>`;
 }
 
 const ASSESSABLE_OPTIONS = [
@@ -375,7 +378,8 @@ function emptyExplanation(data, f) {
     `${num(list(data.companies).length)} watched companies fit.`];
   if (f.assessable === "yes" || f.assessable === "no") {
     out.push("Assessability is recorded by <code>ledgerline check</code>; " +
-      "until that has run a company is neither — it is not checked yet.");
+      "until that has run a company is neither, because it hasn't been " +
+      "checked.");
   }
   // Only sound when assessability is the ONLY thing narrowing the table.
   // Alongside a search box that matched nothing, "every watched company has
@@ -408,8 +412,8 @@ function assessableSentence(data) {
       "checked, and none of them can be assessed yet; every row says why not.";
   }
   return "None of them have been checked yet, so nothing here is known to be " +
-    "assessable — <code>ledgerline check</code> records that, quickly once " +
-    "<code>ledgerline fetch</code> has run.";
+    "assessable. <code>ledgerline check</code> records that. It's quick " +
+    "once <code>ledgerline fetch</code> has run.";
 }
 
 export const PAGE_SIZE = 250;
@@ -464,7 +468,7 @@ export function watchlist(data, f) {
     body += counts + table + pager +
       `<p class="note">A score is a reading against this company's own past,
        0–100, flagged at 45 with at least two measures out of line. Not being
-       flagged is not a clean bill of health — in its own test this detector
+       flagged is not a clean bill of health. In its own test this detector
        missed seven deteriorations in ten.</p>`;
   }
   return layout({
@@ -529,8 +533,8 @@ function measuresTable(measures) {
       says = `<span class="verdict-flagged">Out of line.</span> ` +
         `${esc(m.breaks_when)}.` + (m.floored
           ? ' <span class="quiet">This figure barely moves, so a minimum ' +
-            "wobble was used instead of its own — read the multiple as a " +
-            "ceiling, not a measurement.</span>" : "");
+            "wobble was used instead of its own. Read the multiple as a " +
+            "ceiling.</span>" : "");
     } else {
       says = '<span class="quiet">Within this company\'s own pattern.</span>';
     }
@@ -543,10 +547,10 @@ function measuresTable(measures) {
    past it counts as out of line. The gate stops crediting extra beyond 2.5×,
    so a bar far to the right added no more to the score than one just past the
    tick. A hatched bar means the figure barely moves, so a minimum wobble was
-   used instead of its own — read that multiple as a ceiling.</p>
+   used instead of its own. Read that multiple as a ceiling.</p>
   <p class="note">“Its usual wobble” is this company's own quarter-to-quarter
-   spread, measured over its own recent history — never a comparison with other
-   companies. A measure counts as out of line when it moves far enough against
+   spread, measured over its own recent history. Other companies don't enter
+   into it. A measure counts as out of line when it moves far enough against
    that spread in the direction that would be bad news; the score adds those
    up, and the company is flagged at 45 of 100 with at least two of them.</p>`;
 }
@@ -646,10 +650,10 @@ function provenanceTrail(page, cik) {
     head.push(`${(prov.derived_fraction * 100).toFixed(0)}% of the quarterly ` +
       "figures behind this reading were worked out by subtracting one " +
       "year-to-date report from another rather than read straight off a " +
-      "filing. That is the normal path for cash-flow figures, not a defect" +
+      "filing. That's the normal path for cash-flow figures." +
       (prov.derived_fraction_high
-        ? " — but this company is above every filer measured, which is worth " +
-          "a second look." : "."));
+        ? " This company is above every filer measured, so it's worth a " +
+          "second look." : ""));
   }
   if (!measures.length) {
     return `${head.map((p) => `<p class="note">${esc(p)}</p>`).join("")}
@@ -676,8 +680,8 @@ function provenanceTrail(page, cik) {
     </table></div>
     <p class="note">Every figure above opens the filing it was read from on the
      SEC's own site. A figure marked as worked out from year-to-date reports
-     cites both filings it was differenced from — that is how quarterly cash
-     flow exists at all for most filers.</p>`;
+     cites both filings it was differenced from. Most filers report cash flow
+     only as year-to-date totals, so that's the only way to get a quarter.</p>`;
 }
 
 function historyTable(page) {
@@ -697,9 +701,8 @@ function historyTable(page) {
           `<span class="num">${esc(r.score)} of 100</span>`}</td>
     <td class="quiet">${list(r.flags).map(esc).join(", ") || "—"}</td></tr>`).join("")}
   </table></div>
-  <p class="note">Saved assessments, newest first. Each one was made from the
-   figures that had been filed by its own date — none of them can see a filing
-   that came later.</p>`;
+  <p class="note">Saved assessments, newest first. Each one was made only from
+   figures filed by its own date. None of them can see a later filing.</p>`;
 }
 
 export function company(page) {
@@ -761,8 +764,9 @@ ${flagged.map((c) => `<tr>
   <td class="quiet">${list(c.latest.flags).map(esc).join(", ")}</td></tr>`).join("")}
 </table></div>
 <p class="note">Flagged at 45 of 100 with at least two measures out of line.
- A flag is a prompt to read the filings, not a finding — this detector's
- false-alarm rate was 7.5 times the crude two-line rule it had to beat.</p>`
+ A flag is a prompt to read the filings. It doesn't show anything is wrong.
+ This detector's false-alarm rate was 7.5 times that of the crude two-line
+ rule it had to beat.</p>`
     : ""}`;
   return layout({
     title: "Company", current: "/company",
@@ -777,9 +781,9 @@ export function activity(data) {
   const body = `
 <h2>Runs</h2>
 <p class="note">Every scan and fetch this machine has run, newest first. A scan
- costs one request to the SEC's daily filing index no matter how many companies
- are watched — the cost below does not grow with the watchlist, which is the
- whole reason there is no per-company polling in this tool.</p>
+ makes one request for each day of the SEC's daily filing index it reads.
+ Watching more companies doesn't add requests. That's why this tool doesn't
+ poll each company.</p>
 ${!runs.length
     ? '<div class="empty"><p>Nothing has run yet on this machine.</p>' +
       "<p>Read today's filings: <code>ledgerline scan</code>. Download filing " +
@@ -812,11 +816,11 @@ ${!runs.length
   </tr>`;
     }).join("")}
   </table></div>
-  <p class="note">“Could not assess” is the denominator, and it is counted
-   here on purpose: a run that flagged six of 471 assessed companies while
-   walking away from eighteen more is a different result from one that
-   assessed all 489. A run that flagged nothing is not a quiet market — this
-   detector misses roughly seven deteriorations in ten.</p>`}`;
+  <p class="note">“Could not assess” is part of the denominator, so it's
+   counted here. A run that flagged six of 471 assessed companies and skipped
+   eighteen more is a different result from one that assessed all 489. A run
+   that flagged nothing doesn't mean nothing went wrong. This detector misses
+   roughly seven deteriorations in ten.</p>`}`;
   return layout({
     title: "Activity", current: "/activity",
     validation: data.validation, body, generated: data.generated,

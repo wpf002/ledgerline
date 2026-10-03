@@ -38,12 +38,15 @@ from . import edgar
 # alive as a 10-K/A filer, and the registry's whole job is not losing filers.
 PERIODIC_FORMS: tuple[str, ...] = ("10-K", "10-Q", "10-K/A", "10-Q/A", "20-F", "20-F/A")
 
-# Fixed-width column offsets of company.idx, verified against the 2015Q1
-# header line. Parsed by COLUMN SLICE, never by rsplit(): edgar.daily_index()
-# uses rsplit(None, 3) on form.idx and that is correct there, but company.idx
-# puts the company name FIRST and carries form types containing spaces
-# ('SC 13G/A'), so the same heuristic silently mangles the form column here.
-COL_FORM, COL_CIK, COL_FILED, COL_FILE = 62, 74, 86, 98
+# Where the form type starts in company.idx: the company name is padded to 62
+# characters. Only the form is sliced by column. The original parser sliced
+# CIK, date and filename at 74/86/98, offsets read off the HEADER line -- and
+# the data rows don't follow the header (the date sits at 91, not 86). Every
+# row failed the date check, and the registry filled with nothing, silently:
+# both 2014Q1 and 2024Q1 ingested 0 rows. CIK, date and filename never contain
+# spaces, so they come from the right with rsplit; the form, which can contain
+# spaces ('SC 13G/A'), is the head of the line past column 62.
+COL_FORM = 62
 
 # universe.XBRL_FLOOR is 2011-06-15; earlier quarters hold no contemporaneous
 # XBRL, so a filer visible only before this could never be scored anyway.
@@ -98,20 +101,19 @@ def parse_company_idx(raw: bytes) -> list[dict]:
     """
     out = []
     for line in raw.decode("latin-1").splitlines():
-        if len(line) <= COL_FILE:
+        parts = line.rsplit(None, 3)
+        if len(parts) != 4:
             continue
-        form = line[COL_FORM:COL_CIK].strip()
+        head, cik, filed, fname = parts
+        if not cik.isdigit() or len(filed) != 10 or filed[4] != "-":
+            continue
+        form = head[COL_FORM:].strip()
         if form not in PERIODIC_FORMS:
             continue
-        cik = line[COL_CIK:COL_FILED].strip()
-        filed = line[COL_FILED:COL_FILE].strip()
-        if not cik.isdigit() or len(filed) != 10:
-            continue
-        fname = line[COL_FILE:].strip()
         out.append(
             {
                 "cik": edgar.pad(cik),
-                "name": line[:COL_FORM].strip(),
+                "name": head[:COL_FORM].strip(),
                 "form": form,
                 "filed": filed,
                 "accession": os.path.basename(fname).removesuffix(".txt"),

@@ -187,3 +187,41 @@ def test_arrivals_reads_only_sqlite(tmp_path, monkeypatch):
     got = fullindex.arrivals({edgar.pad("222"), edgar.pad("1084869")},
                              "2015-01-01", "2015-03-31")
     assert got == {"2015-01-30": 1, "2015-02-20": 1}
+
+
+# Five lines copied verbatim from the SEC's 2014Q1 company.idx. The earlier
+# tests built their lines to the HEADER's column positions, which the data rows
+# don't follow, so they passed while the real file parsed to zero rows.
+REAL_2014Q1 = (
+    "Company Name                                                  Form Type   CIK"
+    "         Date Filed  File Name\n"
+    "1ST SOURCE CORP                                               10-K             34782"
+    "       2014-02-21  edgar/data/34782/0000034782-14-000008.txt           \n"
+    "'mktg, inc.'                                                  10-Q             886475"
+    "      2014-02-14  edgar/data/886475/0001019056-14-000250.txt          \n"
+    "ACUITY BRANDS INC                                             10-Q/A           1144215"
+    "     2014-01-09  edgar/data/1144215/0001144215-14-000006.txt         \n"
+    "'mktg, inc.'                                                  SC 13G/A         886475"
+    "      2014-02-07  edgar/data/886475/0001128239-14-000007.txt          \n"
+    "1 800 FLOWERS COM INC                                         8-K              1084869"
+    "     2014-01-17  edgar/data/1084869/0001157523-14-000128.txt         \n"
+)
+
+
+def test_parses_the_real_sec_layout():
+    rows = fullindex.parse_company_idx(REAL_2014Q1.encode("latin-1"))
+    assert [(r["form"], r["cik"], r["filed"]) for r in rows] == [
+        ("10-K", "0000034782", "2014-02-21"),
+        ("10-Q", "0000886475", "2014-02-14"),
+        ("10-Q/A", "0001144215", "2014-01-09"),
+    ]
+    assert rows[0]["name"] == "1ST SOURCE CORP"
+    assert rows[0]["accession"] == "0000034782-14-000008"
+
+
+def test_a_form_type_with_a_space_is_not_mistaken_for_periodic():
+    """'SC 13G/A' contains a space; splitting the form off by whitespace
+    would read it as 'SC' or '13G/A'."""
+    rows = fullindex.parse_company_idx(REAL_2014Q1.encode("latin-1"))
+    assert all(r["form"] in fullindex.PERIODIC_FORMS for r in rows)
+    assert not any(r["accession"] == "0001128239-14-000007" for r in rows)

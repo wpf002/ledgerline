@@ -22,3 +22,4 @@ reports/digest/
 scripts/backfill_state.json
 reports/*.log
 scripts/sic_state.json
+reports/*.err

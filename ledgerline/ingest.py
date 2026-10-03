@@ -192,6 +192,41 @@ def ingest_filer(cik: str, run_id: int, counters: RunCounters, *,
             "restatements": len(events), "low_coverage": low}
 
 
+# A long sleep can't make a run read more than a month of daily lists; past
+# that, `ledgerline fetch` re-downloads everything anyway.
+CATCH_UP_CAP_DAYS = 31
+
+
+def catch_up_days(today: date | None = None) -> int:
+    """How many daily filing lists to read so nothing is skipped since the last
+    completed scan.
+
+    cron skipped every run where the machine was asleep at 21:30 and never ran
+    it later. September 2026 lost about half its weekdays that way. launchd
+    runs a missed job on wake, but it folds every missed interval into one run,
+    so a fixed --days-back still drops days after a long sleep. Counting from
+    the last completed scan fixes both. Re-reading a day costs nothing: past
+    daily indexes are cached and known accessions are skipped.
+
+    started_at is UTC and the scheduled run is 21:30 local, so the stored date
+    can be a day ahead of the local one. The +2 covers that and the last scan's
+    own day, whose index may still have been growing when it ran.
+    """
+    today = today or date.today()
+    conn = edgar.db()
+    try:
+        row = conn.execute(
+            "SELECT started_at FROM job_runs WHERE job = 'scan' AND status = 'ok' "
+            "ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return 2
+    last = datetime.fromisoformat(row[0]).date()
+    return max(2, min(CATCH_UP_CAP_DAYS, (today - last).days + 2))
+
+
 def scan(days_back: int = 1, as_of: str | None = None, score: bool = False,
          refresh: bool = True, ciks: set[str] | None = None) -> dict:
     """The scheduled job body: detect, ingest the filers that filed, book it.

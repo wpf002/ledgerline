@@ -77,10 +77,12 @@ from . import backtest, csvio, edgar, emit, fullindex, ingest, render, restate, 
 from . import calibrate as calib
 from . import cost as cost_mod
 from . import coverage as cov
+from . import doctor as doctor_mod
 from . import groups as group_mod
 from . import narrate as narr
 from . import peers as peer_mod
 from . import provenance as prov
+from . import schedule as schedule_mod
 from . import status as phase0
 from . import track as trackrec
 from . import universe as uni
@@ -561,7 +563,14 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                                            "summary for each company that gets "
                                            "flagged. Needs --score, costs one "
                                            "model call per flagged company, "
-                                           "and is off by default.")):
+                                           "and is off by default."),
+         catch_up: bool = typer.Option(False, "--catch-up",
+                                       help="Read every daily filing list since "
+                                            "the last completed scan instead of "
+                                            "a fixed number of days. The "
+                                            "scheduled scan uses this so a "
+                                            "machine that was asleep loses "
+                                            "nothing.")):
     """Read the SEC's daily filing list and keep watched companies up to date.
 
     One request fetches every filing accepted market-wide that day. Companies
@@ -578,6 +587,10 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
         typer.echo("  ledgerline scan --score --narrate")
         raise typer.Exit(1)
     picked = _group_or_exit(group) if group else None
+    if catch_up:
+        days_back = ingest.catch_up_days()
+        typer.echo(f"Catching up: reading {days_back} days of SEC filing lists "
+                   "since the last completed scan.")
     if score:
         # The verdict prints BEFORE the first result line. A feed that leads
         # with flags and buries the failed test is an alert with a disclaimer.
@@ -711,6 +724,79 @@ def score(ticker: str, as_of: str = typer.Option(None, help="YYYY-MM-DD; uses on
                    "it; saving the same assessment twice records nothing "
                    "new).", err=True)
     typer.echo(json.dumps(res, indent=2))
+
+
+@app.command()
+def doctor():
+    """What's installed, what's missing, and what to run next. Read-only."""
+    checks = doctor_mod.run()
+    mark = {"ok": "ok  ", "warn": "WARN", "fail": "FAIL"}
+    width = max(len(c.name) for c in checks)
+    for c in checks:
+        typer.echo(f"  {mark[c.state]}  {c.name:<{width}}  {c.detail}")
+        if c.fix and c.state != "ok":
+            typer.echo(f"        {'':<{width}}  fix: {c.fix}")
+    bad = [c for c in checks if c.state == "fail"]
+    warn = [c for c in checks if c.state == "warn"]
+    typer.echo("")
+    if bad:
+        typer.echo(f"{len(bad)} problem{'s' if len(bad) != 1 else ''} stop Ledgerline "
+                   "from working here. Fix those first.")
+        raise typer.Exit(1)
+    if warn:
+        typer.echo(f"Works. {len(warn)} thing{'s' if len(warn) != 1 else ''} worth "
+                   "fixing above.")
+    else:
+        typer.echo("Everything checks out.")
+
+
+@app.command()
+def schedule(action: str = typer.Argument("status",
+                                          help="install, uninstall, or status")):
+    """The two background jobs: the weekday scan and the read service.
+
+    install writes both as macOS launchd jobs and removes the old cron line.
+    launchd runs a scan the machine slept through when it wakes, and the scan
+    reads every filing list since the last completed one, so sleep can't drop
+    days. Safe to run again; it replaces and reloads both.
+    """
+    try:
+        if action == "install":
+            out = schedule_mod.install()
+            for j in out["jobs"]:
+                state = "loaded" if j["loaded"] else f"NOT loaded ({j['error']})"
+                typer.echo(f"  {j['label']:24} {state}")
+                typer.echo(f"  {'':24} {j['path']}")
+            if out["cron_removed"]:
+                typer.echo(f"Removed {out['cron_removed']} old cron line"
+                           f"{'s' if out['cron_removed'] != 1 else ''} for the scan.")
+            typer.echo(f"The scan runs weekdays at {schedule_mod.SCAN_HOUR}:"
+                       f"{schedule_mod.SCAN_MINUTE:02d}, and on wake if the machine "
+                       "was asleep then. Logs: reports/scan.log, reports/service.log.")
+        elif action == "uninstall":
+            out = schedule_mod.uninstall()
+            typer.echo("Removed: " + (", ".join(out["removed"]) or "nothing was installed"))
+        elif action == "status":
+            if not schedule_mod.supported():
+                typer.echo("launchd isn't available here. Add this with crontab -e:")
+                typer.echo("  " + schedule_mod.cron_line())
+                return
+            for s in schedule_mod.status():
+                state = ("installed and loaded" if s["installed"] and s["loaded"]
+                         else "installed, not loaded" if s["installed"]
+                         else "not installed")
+                if s["installed"] and not s["current"]:
+                    state += " (points at another repo or Python; reinstall)"
+                typer.echo(f"  {s['label']:24} {state}")
+            if schedule_mod.old_cron_present():
+                typer.echo("  An old cron line for the scan is still installed. "
+                           "`ledgerline schedule install` removes it.")
+        else:
+            typer.echo(f'"{action}" isn\'t an action. Use install, uninstall or status.')
+            raise typer.Exit(2)
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
 
 
 @app.command()

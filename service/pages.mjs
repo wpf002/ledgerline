@@ -475,19 +475,48 @@ export function watchlist(data, f) {
 
 // ------------------------------------------------------------------- company
 
+/* How far past the trigger a measure sits, drawn rather than stated.
+
+   A measure that broke from its pattern is not simply red: the audit called
+   out binary red/not-red as hiding the one thing a reader needs, which is
+   magnitude. The track is scaled so the trigger (2.0 sigma, where a measure
+   starts counting as out of line) lands at 40% -- the same place the
+   stylesheet draws the marker line -- and the cap (Z_CAP 2.5, past which the
+   gate stops crediting extra sigma) at 50%. Beyond that the bar keeps growing
+   to 100% at 5 sigma so a 10-sigma print is visibly off the end, but the
+   SCORE it contributed stopped rising at the cap, and the row's words say so.
+
+   A floored scale is hatched rather than filled, because that multiple is a
+   ceiling, not a measurement. */
+const Z_TRIGGER = 2.0;
+
+function magnitude(m) {
+  const z = Math.abs(Number(m.z));
+  if (!Number.isFinite(z)) return "—";
+  const pct = Math.max(2, Math.min(100, (z / 5) * 100));
+  const cls = ["mag-fill"];
+  if (z >= Z_TRIGGER) cls.push("over");
+  if (m.floored) cls.push("floored");
+  return `<div class="mag">
+      <span class="mag-track"><span class="${cls.join(" ")}"
+        style="width:${pct.toFixed(1)}%"></span></span>
+      <span class="mag-value">${z.toFixed(1)}×</span>
+    </div>`;
+}
+
 function measuresTable(measures) {
   if (!measures || !measures.length) return "";
   return `<div class="scroll"><table>
-  <tr><th>measure</th><th>latest reading</th><th>against its own past</th>
+  <tr><th>measure</th><th>latest reading</th><th>how far from its own normal</th>
       <th>what this row says</th></tr>
   ${measures.map((m) => {
     let past = "—";
     if (m.unavailable_reason) {
       past = '<span class="quiet">not measured</span>';
     } else if (m.z !== null && m.z !== undefined) {
-      past = `${Math.abs(m.z).toFixed(1)}× its usual wobble`;
+      past = magnitude(m);
       if (m.baseline_median !== null && m.baseline_median !== undefined) {
-        past += `<br><span class="quiet">own median ${reading(m.baseline_median)},` +
+        past += `<span class="quiet">own median ${reading(m.baseline_median)},` +
           ` spread ${reading(m.baseline_scale)}, over its last ${num(m.baseline_n)}` +
           " readings</span>";
       }
@@ -509,6 +538,12 @@ function measuresTable(measures) {
       <td class="num">${reading(m.value)}</td><td>${past}</td><td>${says}</td></tr>`;
   }).join("")}
   </table></div>
+  <p class="note">The bar shows how far the measure sits from this company's own
+   normal, in multiples of its usual wobble. The tick is the trigger: anything
+   past it counts as out of line. The gate stops crediting extra beyond 2.5×,
+   so a bar far to the right added no more to the score than one just past the
+   tick. A hatched bar means the figure barely moves, so a minimum wobble was
+   used instead of its own — read that multiple as a ceiling.</p>
   <p class="note">“Its usual wobble” is this company's own quarter-to-quarter
    spread, measured over its own recent history — never a comparison with other
    companies. A measure counts as out of line when it moves far enough against

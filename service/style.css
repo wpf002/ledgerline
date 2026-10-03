@@ -1,151 +1,485 @@
-/* The one stylesheet every page links. It was the <style> block inside
-   index.html when there was one page; four pages that each carried their own
-   copy would be four places for the verdict banner to drift apart in.
+/* The one stylesheet every page links. Four pages each carrying their own copy
+   would be four places for the verdict banner to drift apart in.
 
-   The palette, the type and the light/dark handling are unchanged from that
-   block -- what follows the first section is additions for the pages that did
-   not exist before (navigation, filters, quality chips, timelines), in the
-   same vocabulary. No web fonts, no CDN: the page renders offline. */
+   No web fonts, no CDN, no JavaScript: every page renders offline, and the
+   verdict is in the HTML rather than painted after a fetch. The craft here has
+   to come from type, spacing and colour, because there are no assets to lean
+   on.
+
+   Palette: ledger green against a cool off-white, with an oxide red reserved
+   for one meaning only -- the detector failed its test, or a measure broke
+   from its filer's own pattern. Amber is the third voice and says "this number
+   is a ceiling, not a measurement". Nothing else gets colour. */
 
 :root {
-  --paper:#FAFBF8; --surface:#FFFFFF; --surface-2:#F1F4EF;
-  --ink:#15191A; --ink-2:#3D4644; --ink-3:#6C7772;
-  --rule:#DBE1D9; --rule-soft:#E8EDE6;
-  --accent:#1F5D4C; --accent-wash:#E7F0EB;
-  --flag:#A6321E; --flag-wash:#F8E9E5;
+  /* Neutrals carry a green bias so they read as chosen rather than inherited. */
+  --paper:      #F7F9F6;
+  --surface:    #FFFFFF;
+  --surface-2:  #EEF3EC;
+  --surface-3:  #E4EBE2;
+  --ink:        #101413;
+  --ink-2:      #3A4341;
+  --ink-3:      #69736F;
+  --rule:       #D6DED4;
+  --rule-soft:  #E7EDE5;
+
+  --accent:     #1B5A49;
+  --accent-2:   #2C7D67;
+  --accent-wash:#E3EFEA;
+  --flag:       #9E2E1B;
+  --flag-2:     #C4553E;
+  --flag-wash:  #FAEAE6;
+  --warn:       #7A5410;
+  --warn-wash:  #F8F0DC;
+
+  --shadow-1: 0 1px 2px rgba(16, 20, 19, .04);
+  --shadow-2: 0 1px 2px rgba(16, 20, 19, .05), 0 10px 24px -18px rgba(16, 20, 19, .3);
+
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --serif: ui-serif, Iowan Old Style, Palatino, Georgia, serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --measure: 70ch;
+  --radius: 6px;
 }
+
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper:#0E1211; --surface:#151A19; --surface-2:#1B2220;
-    --ink:#E9EDE8; --ink-2:#B6C0BA; --ink-3:#7E8A85;
-    --rule:#2A3331; --rule-soft:#212927;
-    --accent:#63B79B; --accent-wash:#16302A;
-    --flag:#E2705A; --flag-wash:#2E1A16;
+    --paper:      #0C100F;
+    --surface:    #141917;
+    --surface-2:  #1A201E;
+    --surface-3:  #222A27;
+    --ink:        #E8EDE9;
+    --ink-2:      #B2BDB8;
+    --ink-3:      #7B8782;
+    --rule:       #273130;
+    --rule-soft:  #1E2624;
+
+    --accent:     #5FB89B;
+    --accent-2:   #74C9AD;
+    --accent-wash:#13302A;
+    --flag:       #E07C63;
+    --flag-2:     #EE9179;
+    --flag-wash:  #2B1713;
+    --warn:       #D8AC5A;
+    --warn-wash:  #2A2314;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-2: 0 1px 2px rgba(0, 0, 0, .45), 0 10px 24px -18px rgba(0, 0, 0, .9);
   }
 }
+
 * { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
 body {
-  margin: 0; background: var(--paper); color: var(--ink);
-  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15.5px/1.65 var(--sans);
+  font-feature-settings: "kern" 1;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
-.wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
-.wrap.wide { max-width: 1120px; }
-h1 { font-size: 1.7rem; letter-spacing: -.01em; margin: 0 0 .25rem;
-     font-family: ui-serif, Georgia, serif; font-weight: 600; }
-h1 a { color: inherit; text-decoration: none; }
-.sub { color: var(--ink-3); margin: 0 0 1.5rem; }
+
+.wrap { max-width: 900px; margin: 0 auto; padding: 0 1.5rem 5rem; }
+.wrap.wide { max-width: 1180px; }
+
+/* ------------------------------------------------------------- the verdict */
+
+/* First thing in the body on every page. It is set like something stamped on
+   a document rather than a notification, because it is a finding about this
+   tool and it does not go away. */
 .banner {
-  border-left: 3px solid var(--flag); background: var(--flag-wash);
-  padding: .9rem 1.1rem; border-radius: 0 3px 3px 0; margin: 0 0 1.75rem;
-  font-size: .92rem; max-width: 74ch;
+  border: 1px solid var(--flag);
+  border-left-width: 4px;
+  background: var(--flag-wash);
+  color: var(--ink-2);
+  padding: 1rem 1.25rem;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin: 1.75rem 0 2rem;
+  font-size: .91rem;
+  line-height: 1.6;
+  max-width: var(--measure);
 }
-.banner b { font-family: ui-monospace, Menlo, monospace; font-size: .8rem;
-            letter-spacing: .07em; color: var(--flag); display: block;
-            margin-bottom: .3rem; }
-h2 { font-size: 1.05rem; border-bottom: 1px solid var(--rule);
-     padding-bottom: .4rem; margin: 2rem 0 .9rem; }
-.stats { display: flex; flex-wrap: wrap; gap: 0; border: 1px solid var(--rule);
-         border-radius: 3px; overflow: hidden; background: var(--surface); }
-.stats div { flex: 1 1 auto; padding: .6rem 1rem; border-right: 1px solid var(--rule); }
-.stats div:last-child { border-right: 0; }
-.stats dt { font: 600 .62rem/1.4 ui-monospace, Menlo, monospace;
-            letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
-            margin: 0 0 .1rem; }
-.stats dd { margin: 0; font-family: ui-monospace, Menlo, monospace;
-            font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.expect { background: var(--surface-2); border-radius: 3px; padding: .7rem 1rem;
-          margin: 1rem 0; font-size: .92rem; max-width: 74ch; }
-table { border-collapse: collapse; width: 100%; font-size: .9rem;
-        background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; }
-th { text-align: left; font: 600 .62rem/1.4 ui-monospace, Menlo, monospace;
-     letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3);
-     padding: .55rem .9rem; border-bottom: 1px solid var(--rule);
-     background: var(--surface-2); }
-td { padding: .6rem .9rem; border-bottom: 1px solid var(--rule-soft);
-     vertical-align: top; }
-tr:last-child td { border-bottom: 0; }
-td.num { font-family: ui-monospace, Menlo, monospace;
-         font-variant-numeric: tabular-nums; white-space: nowrap; }
-td.tick { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+.banner b {
+  display: block;
+  font: 700 .68rem/1.4 var(--mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--flag);
+  margin-bottom: .45rem;
+}
+.banner a { color: var(--flag); text-underline-offset: 2px; }
+
+/* ------------------------------------------------------------ the masthead */
+
+.masthead { padding-top: .5rem; }
+h1 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(1.6rem, 3.4vw, 2.1rem);
+  line-height: 1.12;
+  letter-spacing: -.016em;
+  margin: 0 0 .3rem;
+}
+h1 a { color: inherit; text-decoration: none; }
+h1 a:hover { color: var(--accent); }
+.sub { color: var(--ink-3); margin: 0 0 1.4rem; font-size: .95rem; max-width: 62ch; }
+
+nav.pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .15rem;
+  margin: 0 0 2rem;
+  border-bottom: 1px solid var(--rule);
+}
+nav.pages a {
+  display: block;
+  padding: .5rem .9rem;
+  text-decoration: none;
+  font-size: .9rem;
+  font-weight: 500;
+  color: var(--ink-3);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  border-radius: var(--radius) var(--radius) 0 0;
+  transition: color .12s, background .12s;
+}
+nav.pages a:hover { color: var(--ink); background: var(--surface-2); }
+nav.pages a[aria-current=page] {
+  color: var(--accent);
+  font-weight: 650;
+  border-bottom-color: var(--accent);
+}
+
+/* ------------------------------------------------------------- type scale */
+
+h2 {
+  font-family: var(--serif);
+  font-size: 1.22rem;
+  font-weight: 600;
+  letter-spacing: -.008em;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: .45rem;
+  margin: 2.75rem 0 1rem;
+}
+h3 {
+  font-size: .95rem;
+  font-weight: 650;
+  margin: 1.75rem 0 .5rem;
+}
+p { max-width: var(--measure); }
+.quiet { color: var(--ink-3); font-size: .88rem; }
+.note { font-size: .88rem; color: var(--ink-3); max-width: var(--measure); margin: .75rem 0 0; }
+
+a { color: var(--accent); text-underline-offset: 2px; text-decoration-thickness: 1px; }
+a:hover { color: var(--accent-2); }
+
+code {
+  font-family: var(--mono);
+  font-size: .85em;
+  background: var(--surface-2);
+  padding: .12em .4em;
+  border-radius: 3px;
+  border: 1px solid var(--rule-soft);
+}
+
+/* -------------------------------------------------------------- stat tiles */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-1);
+  margin: 0 0 1.25rem;
+}
+.stats div { background: var(--surface); padding: .85rem 1.1rem; }
+.stats dt {
+  font: 650 .63rem/1.4 var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 .25rem;
+}
+.stats dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 1.3rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+  line-height: 1.2;
+}
+
+/* The chance-alone expectation. It sits before the first ticker on purpose and
+   is set to be read, not skimmed past. */
+.expect {
+  background: var(--warn-wash);
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+  border-radius: var(--radius);
+  padding: .9rem 1.1rem;
+  margin: 1.25rem 0;
+  font-size: .91rem;
+  max-width: var(--measure);
+}
+
+/* ------------------------------------------------------------------ tables */
+
+.scroll {
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  -webkit-overflow-scrolling: touch;
+}
+.scroll table { border: 0; box-shadow: none; }
+.scroll th { white-space: nowrap; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: .9rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+}
+th {
+  text-align: left;
+  font: 650 .63rem/1.5 var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: .65rem .95rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+td {
+  padding: .7rem .95rem;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+tbody tr:last-child td, tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--surface-2); }
+td.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+td.tick { font-family: var(--mono); font-weight: 650; white-space: nowrap; }
 /* The ticker is an identifier and is set like one; the company's name beneath
    it is a name, and reading it in monospace makes it look like a key too. */
-td.tick .quiet { font-family: ui-sans-serif, system-ui, -apple-system,
-                 "Segoe UI", sans-serif; font-weight: 400; }
-.quiet { color: var(--ink-3); font-size: .88rem; }
-form { display: flex; gap: .5rem; margin: .25rem 0 1rem; }
-input[type=text] {
-  flex: 0 1 14rem; padding: .5rem .7rem; border: 1px solid var(--rule);
-  border-radius: 3px; background: var(--surface); color: var(--ink);
-  font: inherit; text-transform: uppercase;
+td.tick .quiet { font-family: var(--sans); font-weight: 400; display: block; }
+td.tick a { text-decoration: none; }
+td.tick a:hover { text-decoration: underline; }
+
+/* ------------------------------------------------- magnitude, not a boolean */
+
+/* A measure that broke from its pattern is not simply red. How far past the
+   trigger it sits is the only thing a reader actually needs, and a binary
+   colour hides it. The bar is scaled by the caller against the gate's own cap,
+   so the widths are comparable row to row. */
+.mag {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  min-width: 11rem;
 }
-button { padding: .5rem 1rem; border: 0; border-radius: 3px;
-         background: var(--accent); color: var(--paper); font: 600 .9rem inherit;
-         cursor: pointer; }
-button:focus-visible, input:focus-visible, select:focus-visible,
-a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-a { color: var(--accent); }
-footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule);
-         font-size: .8rem; color: var(--ink-3); }
-code { font-family: ui-monospace, Menlo, monospace; font-size: .85em;
-       background: var(--surface-2); padding: .1em .35em; border-radius: 2px; }
+.mag-track {
+  position: relative;
+  flex: 1;
+  height: .5rem;
+  background: var(--surface-3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.mag-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.mag-fill.over { background: var(--flag); }
+.mag-fill.floored { background: repeating-linear-gradient(
+  135deg, var(--warn), var(--warn) 3px, transparent 3px, transparent 6px); }
+.mag-value {
+  font: 600 .8rem/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+/* The trigger line: everything to its right counts as out of line. */
+.mag-track::after {
+  content: "";
+  position: absolute;
+  left: 40%;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  background: var(--ink-2);
+  opacity: .8;
+}
 
-/* ---------------------------------------------------- the multi-page parts */
-
-nav.pages { display: flex; flex-wrap: wrap; gap: .1rem; margin: 0 0 1.5rem;
-            border-bottom: 1px solid var(--rule); }
-nav.pages a { display: block; padding: .45rem .85rem; text-decoration: none;
-              font-size: .9rem; color: var(--ink-2); border-bottom: 2px solid transparent;
-              margin-bottom: -1px; }
-nav.pages a:hover { color: var(--ink); }
-nav.pages a[aria-current=page] { color: var(--accent); font-weight: 600;
-                                 border-bottom-color: var(--accent); }
-
-/* Filters read as a line of controls, not a form to fill in. */
-form.filters { flex-wrap: wrap; align-items: flex-end; gap: .6rem;
-               background: var(--surface); border: 1px solid var(--rule);
-               border-radius: 3px; padding: .8rem 1rem; }
-form.filters label { display: block; font: 600 .62rem/1.6 ui-monospace, Menlo, monospace;
-                     letter-spacing: .09em; text-transform: uppercase;
-                     color: var(--ink-3); }
-form.filters select { padding: .45rem .5rem; border: 1px solid var(--rule);
-                      border-radius: 3px; background: var(--surface);
-                      color: var(--ink); font: inherit; font-size: .9rem; }
-/* The base rule sets a flex basis, which inside a column-direction .field
-   would size the box vertically -- a search box eight lines tall. */
-form.filters input[type=text] { flex: none; width: 12rem; text-transform: none; }
-form.filters .field { display: flex; flex-direction: column; gap: .2rem; }
-form.filters a.clear { align-self: center; font-size: .85rem; }
-
-.chips { display: flex; flex-wrap: wrap; gap: .3rem; }
-.chip { display: inline-block; font-size: .74rem; line-height: 1.5;
-        padding: .05rem .5rem; border-radius: 10px; border: 1px solid var(--rule);
-        background: var(--surface-2); color: var(--ink-2); cursor: help; }
-.chip.warn { border-color: var(--flag); background: var(--flag-wash); color: var(--flag); }
-.chip.plain { cursor: default; }
-
-.verdict-flagged { color: var(--flag); font-weight: 600; }
+.verdict-flagged { color: var(--flag); font-weight: 650; }
 .verdict-quiet { color: var(--ink-2); }
 .verdict-none { color: var(--ink-3); }
 
-.explain { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace;
-           font-size: .82rem; background: var(--surface);
-           border: 1px solid var(--rule); border-radius: 3px;
-           padding: 1rem; overflow-x: auto; margin: 0 0 1rem; }
-.note { font-size: .88rem; color: var(--ink-3); max-width: 74ch; margin: .6rem 0 0; }
-.empty { background: var(--surface); border: 1px solid var(--rule);
-         border-radius: 3px; padding: 1.2rem; max-width: 74ch; }
-.empty p { margin: 0 0 .6rem; }
+/* ------------------------------------------------------------------- forms */
+
+form { display: flex; gap: .55rem; margin: .25rem 0 1.25rem; }
+input[type=text], select {
+  padding: .5rem .7rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: .9rem;
+}
+input[type=text] { flex: 0 1 14rem; text-transform: uppercase; }
+button {
+  padding: .5rem 1.1rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font: 650 .9rem var(--sans);
+  cursor: pointer;
+  transition: background .12s;
+}
+button:hover { background: var(--accent-2); }
+:is(button, input, select, a, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+form.filters {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: .7rem;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: .9rem 1.1rem;
+  box-shadow: var(--shadow-1);
+}
+form.filters label {
+  display: block;
+  font: 650 .63rem/1.6 var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+/* The base rule sets a flex basis, which inside a column-direction .field
+   would size the box vertically -- a search box eight lines tall. */
+form.filters input[type=text] { flex: none; width: 12rem; text-transform: none; }
+form.filters .field { display: flex; flex-direction: column; gap: .25rem; }
+form.filters a.clear { align-self: center; font-size: .85rem; }
+
+/* ------------------------------------------------------------------- chips */
+
+.chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+.chip {
+  display: inline-block;
+  font: 500 .74rem/1.5 var(--sans);
+  padding: .1rem .55rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: help;
+}
+.chip.warn {
+  border-color: color-mix(in srgb, var(--flag) 40%, transparent);
+  background: var(--flag-wash);
+  color: var(--flag);
+}
+.chip.plain { cursor: default; }
+
+/* --------------------------------------------------------------- the panel */
+
+.explain {
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: .82rem;
+  line-height: 1.6;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 1.1rem 1.25rem;
+  overflow-x: auto;
+  margin: 0 0 1.25rem;
+  box-shadow: var(--shadow-1);
+}
+
+.empty {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 1.4rem 1.5rem;
+  max-width: var(--measure);
+  box-shadow: var(--shadow-1);
+}
+.empty p { margin: 0 0 .7rem; }
 .empty p:last-child { margin: 0; }
-.pager { display: flex; gap: 1rem; align-items: baseline; margin: .8rem 0 0;
-         font-size: .88rem; }
-.acc { font-family: ui-monospace, Menlo, monospace; font-size: .82rem;
-       white-space: nowrap; }
-.scroll { overflow-x: auto; }
-/* Inside a scrolling table a wrapped header column reads as a truncated word.
-   The container scrolls; the heading does not have to fold. */
-.scroll th { white-space: nowrap; }
-dl.meta { display: flex; flex-wrap: wrap; gap: 0 1.5rem; margin: 0 0 1.25rem;
-          font-size: .88rem; color: var(--ink-3); }
-dl.meta div { display: flex; gap: .35rem; }
-dl.meta dt { font-weight: 600; }
+
+.pager { display: flex; gap: 1.1rem; align-items: baseline; margin: 1rem 0 0; font-size: .88rem; }
+.acc { font-family: var(--mono); font-size: .82rem; white-space: nowrap; }
+
+dl.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem 1.6rem;
+  margin: 0 0 1.4rem;
+  font-size: .88rem;
+  color: var(--ink-3);
+}
+dl.meta div { display: flex; gap: .4rem; }
+dl.meta dt { font-weight: 650; }
 dl.meta dd { margin: 0; }
+
+footer {
+  margin-top: 4rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--rule);
+  font-size: .82rem;
+  color: var(--ink-3);
+  max-width: var(--measure);
+}
+
+/* ---------------------------------------------------------------- phone */
+
+@media (max-width: 640px) {
+  body { font-size: 15px; }
+  .wrap { padding: 0 1rem 3.5rem; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); }
+  .stats dd { font-size: 1.1rem; }
+  nav.pages { gap: 0; }
+  nav.pages a { padding: .45rem .65rem; font-size: .86rem; }
+  .mag { min-width: 8rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* A page printed for a meeting must still carry the verdict, and the
+   navigation is noise on paper. */
+@media print {
+  nav.pages, form, .pager { display: none; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  .banner { border-color: #000; background: #fff; }
+  .scroll, table { box-shadow: none; }
+  a { text-decoration: underline; }
+}

@@ -214,7 +214,7 @@ When the tool looks at a past date, it uses only the figures that had actually b
 
 Each figure is kept as the full sequence of versions the company published for it — the original, then every later correction — each stamped with the date it appeared.
 
-**Why it matters:** It is what makes "only what was public that day" possible, and it is how the tool spots restatements at all. A figure that was revised three times is three different pieces of information, not one.
+**Why it matters:** It's how "only what was public that day" works, and it's how the tool spots restatements. A figure that was revised three times is three different pieces of information, not one.
 
 **Example:** Sales for the quarter ending June 2021: first published 5 August 2021 at $412m, revised 21 February 2022 to $398m. A reader in December 2021 saw $412m, so that is what the tool uses for December 2021.
 
@@ -222,7 +222,7 @@ Each figure is kept as the full sequence of versions the company published for i
 
 A full year's worth of a figure, made by adding the four most recent quarters, which smooths out the fact that most businesses have busy and quiet seasons.
 
-**Why it matters:** Comparing one quarter to the next is mostly a comparison of seasons. Adding four consecutive quarters removes that. Crucially, the tool refuses to add four quarters that are not actually consecutive: if a quarter is missing it returns nothing rather than a plausible wrong total.
+**Why it matters:** Comparing one quarter to the next is mostly a comparison of seasons. Adding four consecutive quarters removes that. The tool refuses to add four quarters that are not actually consecutive: if a quarter is missing it returns nothing rather than a plausible wrong total.
 
 **Example:** Q3 2024 through Q2 2025 add to $4,000m of sales. If Q4 2024 is missing from the record, the tool does not quietly reach back to Q3 2023 to make four — it declines to produce the figure.
 
@@ -286,7 +286,7 @@ The companies are divided in two: one half to develop and tune the method on, th
 
 The exact standard the method had to meet was written to a file and committed before the test was run, and the code refuses to overwrite it.
 
-**Why it matters:** Deciding what counts as success after seeing the results is how almost every method ends up looking better than it is. Fixing the bar in advance is what makes a failure meaningful — and this method failed a bar it set for itself.
+**Why it matters:** Deciding what counts as success after seeing the results is how almost every method ends up looking better than it is. Fixing the bar in advance is what makes a failure mean anything. This method failed a bar it set for itself.
 
 **Example:** The committed rule: catch at least 60% of the bad turns, at most 4% false alarms per company-quarter, at least 6 months of median warning, hits in at least 4 eras, and beat a trivial comparison method. Fail any one and the answer is KILL.
 

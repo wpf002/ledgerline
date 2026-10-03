@@ -7,8 +7,8 @@ The rule said any single failed criterion is a kill. Two failed.
 
 This file is the write-up `ROADMAP.md` promised. The machine-readable record is
 `ledgerline/data/phase0.json`, written once by `ledgerline phase0-freeze` and
-committed — `reports/*.json` is gitignored, so `backtest_holdout.json` itself
-does not survive a fresh clone. Every command that shows a score reads the
+committed. `reports/*.json` is gitignored, so `backtest_holdout.json` doesn't
+survive a fresh clone. Every command that shows a score reads the
 frozen record through `ledgerline/status.py` and refuses to run without it.
 
 ## The result
@@ -24,7 +24,7 @@ frozen record through `ledgerline/status.py` and refuses to run without it.
 
 The gate caught 28.7% of the deteriorations it was built to warn about, and it
 raised false alarms at seven times the rate of the two-line rule it had to beat
-(TTM operating cash flow negative while net debt is positive — 0.0051 per
+(TTM operating cash flow negative while net debt is positive: 0.0051 per
 control quarter over 7,988 control filer-quarters).
 
 Also measured, reported but never part of the pass mark: 14 positives fired on
@@ -35,51 +35,48 @@ remain of 178).
 ## The per-filer number: 0.512
 
 The per-quarter false-positive rate passed its criterion with 0.0017 of
-headroom. The same fires, counted per company instead of per quarter, read
-very differently: **51.2% of the control filers — companies that never
-deteriorated — were flagged at least once** across their scoreable history
-(7,657 control filer-quarters). The pre-registration required this number to
-be reported, not gated on, and that choice looks generous in hindsight: one
-false alarm per company is what actually spends a reader's trust, and this
-gate spends it on half the quiet companies it watches. Any future
-pre-registration should consider gating on the per-filer rate directly.
+headroom. Counted per company instead of per quarter, the same fires read very
+differently. **51.2% of control filers, companies that never deteriorated,
+were flagged at least once** across their scoreable history
+(7,657 control filer-quarters). The pre-registration required this number to be reported, not gated on.
+That was the wrong call. A reader sees one false alarm per company, not a rate
+per quarter, and half the quiet companies here produce one. A future
+pre-registration should gate on the per-filer rate directly.
 
-Two denominators, one warning: 0.0383 counts fires among quarters of filers
-that *never* deteriorated. A live rate computed over "quarters not yet
+Watch the denominators. 0.0383 counts fires among quarters of filers that
+*never* deteriorated. A live rate computed over "quarters not yet
 followed by deterioration" includes the quiet quarters of filers that break
 later, and is not comparable to this number.
 
 ## What did NOT go wrong
 
-Worth recording, because it constrains what a revision should change:
+These constrain what a revision should change:
 
 - **No overfitting.** The holdout scored *better* than the tuning split the
   weights were fitted on: 0.287 vs 0.212 hit rate, 9 vs 6 months median lead.
-  The gate generalizes; what it generalizes is not good enough.
+  It generalizes. What it generalizes isn't good enough.
 - **Not a beta detector.** It fired with positive lead in all six market eras,
-  including `2017-19-idiosyncratic` — the regime a falling-market detector
-  cannot fake.
+  including `2017-19-idiosyncratic`, which has no market-wide selloff to ride.
 - **The measurement layer held.** Point-in-time truncation by `filed` date,
   generated (not curated) cases, a committed split and rule, and one code path
-  shared by backtest and production all survived adversarial audit. The 0.287
-  is a clean number about a bad gate, not a dirty number about an unknown one.
+  shared by backtest and production all survived adversarial audit. 0.287 is a reliable measurement of a gate that doesn't work.
 - **The lead is real.** When the gate did fire ahead of a deterioration, the
-  median warning was 9 months — early enough to matter, if only it fired often
-  enough to trust.
+  median warning was 9 months. That's useful lead time. It just doesn't fire
+  often enough.
 
-The failure is recall. The gate finds real deterioration; it finds too little
-of it, and it is noisier than a two-line rule.
+The failure is recall. The gate finds real deterioration. It finds too little
+of it, and it's noisier than a two-line rule.
 
 ## A specification defect in criterion 5 of the label
 
-The deterioration label (the outcome side of the test — `ledgerline/label.py`)
-trips when at least 2 of 5 criteria occur within four quarters. Its fifth
+The deterioration label is the outcome side of the test, in
+`ledgerline/label.py`. It trips when at least 2 of 5 criteria occur within four quarters. Its fifth
 criterion, `RESTATEMENT`, is specified as "a 10-K/A or 10-Q/A touching
-revenue, OCF or net income" — it keys on *amended forms*.
+revenue, OCF or net income". It keys on *amended forms*.
 
 Measured during the Phase 1 design pass, on the full vintage histories of 12
 randomly sampled cached filers: of 624 value revisions actually observed,
-**6 arrived on an /A form — 0.96%**. The other 99% land silently as revised
+**6 arrived on an /A form, 0.96%**. The other 99% land silently as revised
 comparatives inside ordinary 10-Ks and 10-Qs. So the criterion as specified
 detects roughly one restatement in a hundred, and the label set is thinner on
 restatement-driven deteriorations than its own definition intends. (12 filers
@@ -88,9 +85,9 @@ measurement replaces it.)
 
 **This is deliberately not fixed.** The holdout was scored against the label
 as written. Editing a labeling criterion after the fact would mean the Phase 0
-numbers above could no longer be reproduced from the code — corrupting the one
-clean measurement the project has, to flatter or punish a gate that already
-has its verdict. The defect is recorded here; a corrected
+numbers above could no longer be reproduced from the code. That would corrupt
+the only clean measurement here, to flatter or punish a gate that already has
+its verdict. The defect is recorded here; a corrected
 `RESTATEMENT` criterion (detection by vintage growth rather than form suffix)
 belongs to a future re-measurement under a new pre-registration, on data this
 test never touched.
@@ -99,9 +96,9 @@ test never touched.
 
 Per the pre-registration: the deterministic gate is not a viable product core,
 and the product phases conditioned on it are not built as designed. **Do not
-retune and re-run against this holdout** — it is spent; a scored sealed half
-cannot be sealed again. What continues is the part whose value never depended
-on the gate: the point-in-time fact store, provenance, restatement detection,
+retune and re-run against this holdout.** It's spent. A sealed half that has
+been scored can't be sealed again. What continues is the part that never
+depended on the gate working: the point-in-time fact store, provenance, restatement detection,
 and the measurement machinery that would be needed to test any revised gate
 against a new reservation. Every surface that shows a score carries this
 verdict, stamped from the frozen record, until some future gate passes a test

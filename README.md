@@ -1,27 +1,24 @@
 # Ledgerline
 
-Ledgerline reads companies' official filings to the SEC and looks for a company
-whose numbers have started behaving unlike that same company's own past. Not
-"is this number big" but "is this unusual for *them*". When something looks
-off it says so, shows the arithmetic, and links back to the filing the numbers
-came from.
+Ledgerline reads companies' SEC filings and looks for numbers that have started
+behaving unlike that same company's own past. The question is "is this unusual
+for them", not "is this number big". When something looks off it says so, shows
+the arithmetic, and links to the filing the numbers came from.
 
-**Status: tested and failed — KILL, 2026-08-30.** The detection method was
-scored once against a standard written down and committed to git before the
-test ran. It caught 28.7% of the deteriorations it was built to warn about;
-the bar it had set for itself was 60%. And it raised false alarms on 3.83% of
-quiet company-quarters, where the crude two-line rule it had to beat raises
-0.51%. Two of six criteria failed, so the pre-registered answer is no. Full
-write-up: `reports/PHASE0.md`; the frozen numbers every score-showing command
-reads live in `ledgerline/data/phase0.json`.
+**Status: tested and failed. KILL, 2026-08-30.** The detection method was
+scored once against a standard committed to git before the test ran. It caught
+28.7% of the deteriorations it was built to warn about. Its own bar was 60%. It
+also raised false alarms on 3.83% of quiet company-quarters, against 0.51% for
+the crude two-line rule it had to beat. Two of six criteria failed, so the
+answer is no. Write-up: `reports/PHASE0.md`. The frozen numbers that every
+score-showing command reads are in `ledgerline/data/phase0.json`.
 
-What *is* solid is everything underneath: point-in-time discipline (the tool
-only ever uses figures that had actually been filed by the date it is asked
-about), a test set generated from the data rather than hand-picked, and a
-sealed test half scored exactly once. Every number is published, so anyone can
-check the failure.
+What works is everything underneath. The tool only ever uses figures that had
+actually been filed by the date you ask about. The test set was generated from
+the data instead of hand-picked. The sealed half was scored exactly once. Every
+number is published, so you can check the failure yourself.
 
-**Getting started:** see `docs/RUNNING.md`. The short version:
+**Getting started:** see `docs/RUNNING.md`. Short version:
 
 ```bash
 ./bootstrap.sh                       # once: venv, packaging, git hooks
@@ -31,11 +28,11 @@ ledgerline fetch
 ledgerline explain AAPL
 ```
 
-Or read it in a browser instead of the terminal — `ledgerline publish` then
-`node service/server.mjs`, and open **http://localhost:8787**: the latest run,
-the watchlist, a page per company, and the run log. Nothing is installed for
-it and nothing leaves the machine. Every page leads with the failed test above,
-because a dashboard is not evidence that the detector works.
+To read it in a browser instead: `ledgerline publish`, then
+`node service/server.mjs`, then open **http://localhost:8787**. You get the
+latest run, the watchlist, a page per company, and the run log. Nothing is
+installed for it and nothing leaves the machine. Every page leads with the
+failed test, because a dashboard isn't evidence that the detector works.
 
 ## Repo setup
 

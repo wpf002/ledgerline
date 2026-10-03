@@ -18,7 +18,7 @@ for the test result.
 |---|---|
 | Detector | Failed. Caught 28.7% of deteriorations, needed 60%. False alarms 0.0383 per quiet company-quarter vs 0.0051 for a two-line rule. 51.2% of fine companies flagged at least once. |
 | Everything under it | Built and audited twice. 450 tests. Ingestion, point-in-time vintages, provenance to accession, abstention, signal ledger, track record, cost model, filer registry. |
-| Surface | CLI, four web pages, JSON contract, CSV import/export. |
+| Surface | CLI, five web pages, JSON contract, CSV import/export. |
 | Reserved test set | `r1`. 8,888 company-quarters, hashed 2026-08-30, can be scored from 2028-02-12. |
 
 The measurement machinery works. The thing it measured doesn't. So 1.0 can't

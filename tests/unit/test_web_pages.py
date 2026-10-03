@@ -1,5 +1,5 @@
 """
-The four web pages, served by service/server.mjs against published files.
+The five web pages, served by service/server.mjs against published files.
 
 Each test pins one decision or defect:
 
@@ -47,14 +47,14 @@ import time
 
 import pytest
 
-from ledgerline import edgar, emit, groups
+from ledgerline import edgar, emit, groups, status
 from ledgerline.api import contract, views
 from tests.unit.test_signal_store import fired_verdict, unscoreable_verdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SERVER = os.path.join(ROOT, "service", "server.mjs")
 
-PAGES = ["/", "/watchlist", "/company/TEST", "/activity"]
+PAGES = ["/", "/watchlist", "/company/TEST", "/activity", "/verdict"]
 
 # What "before any other content" is measured against: the masthead, the
 # navigation, and the first heading of the page's own body.
@@ -197,8 +197,8 @@ def test_no_page_needs_javascript_or_the_network(site, path):
 
 
 def test_one_stylesheet_serves_every_page(site):
-    """One route, one copy. Four pages each carrying their own <style> block
-    would be four places for the verdict banner's styling to drift apart."""
+    """One route, one copy. Five pages each carrying their own <style> block
+    would be five places for the verdict banner's styling to drift apart."""
     status, headers, css = site.request("/style.css")
     assert status == 200
     assert headers["Content-Type"].startswith("text/css")
@@ -681,3 +681,81 @@ def test_nothing_assessed_yet_is_a_first_run_state_not_an_outage(site):
     assert "Nothing has been assessed yet" in body
     assert "score FMC --emit" in body
     assert body.index("UNVALIDATED-KILL") < body.index("Nothing has been assessed yet")
+
+
+# ------------------------------------------------ the page the banner links to
+
+
+def test_the_banner_links_to_a_page_a_person_can_read(site):
+    """The banner's link opened /validation, the validation block as raw
+    JSON: the one place a reader goes to check the verdict was a page only a
+    program could read. It opens /verdict now, which lays out the six
+    pre-registered checks with what each one required, from verdict.json."""
+    assert 'href="/verdict"' in site.body("/")
+    code, headers, page = site.request("/verdict")
+    assert code == 200
+    assert headers["Content-Type"].startswith("text/html")
+    with open(os.path.join(site.feed_dir, "verdict.json")) as fh:
+        published = json.load(fh)
+    failed = [k for k, c in status.load()["checks"].items() if not c["pass"]]
+    assert published["n_failed"] == len(failed)
+    for check in published["checks"]:
+        assert check["name"] in page
+        assert check["required"] in page
+    assert "28.7%" in page and "at least 60%" in page
+    assert "ledgerline reproduce" in page
+
+
+def test_the_test_page_unpublished_says_what_to_run(site):
+    os.remove(os.path.join(site.feed_dir, "verdict.json"))
+    code, _, body = site.request("/verdict")
+    assert code == 503
+    assert "verdict.json" in body and "ledgerline publish" in body
+    assert statement() in body
+
+
+# ------------------------------------------------------------ what the charts say
+
+
+def _measure(name: str, z: float, out_of_line: bool) -> dict:
+    return {"measure": name, "technical": name.replace("-", "_"), "value": 0.1,
+            "z": z, "out_of_line": out_of_line, "floored": False,
+            "unavailable_reason": None, "breaks_when": "It moved",
+            "baseline_median": None, "baseline_scale": None, "baseline_n": None,
+            "filed": None, "sources": []}
+
+
+def test_a_large_move_the_harmless_way_is_not_drawn_out_of_line():
+    """The old magnitude bar took |z|, so a measure that moved three times its
+    usual wobble in the harmless direction drew red past the trigger while its
+    own row said "Within this company's own pattern". 272 rows on the published
+    pages read that way. The dot sits at the signed z and takes its colour from
+    the row's own out_of_line flag."""
+    page = _company_page(scoreable=True, label="TRACED")
+    page["measures"] = [_measure("share-creep", -3.0, False),
+                        _measure("cash-vs-sales", 3.0, True)]
+    body = render_page("company", page)
+    assert body.count('class="dist-dot flag"') == 1
+    assert "the harmless way" in body
+
+
+def test_the_score_history_chart_draws_what_was_saved():
+    """One bar per saved assessment: red where it flagged, a hatched column
+    where it couldn't assess, and the flag line. Inline SVG with no xmlns, so
+    the page still carries no address off this machine but the SEC's."""
+    page = _company_page(scoreable=True, label="TRACED")
+    page["history"] = [
+        {"as_of": "2025-11-15", "period": "2025-09-30", "score": 61.0,
+         "flagged": True, "scoreable": True, "flags": ["cash-vs-sales"]},
+        {"as_of": "2025-08-15", "period": "2025-06-30", "score": 20.0,
+         "flagged": False, "scoreable": True, "flags": []},
+        {"as_of": "2025-05-15", "period": "2025-03-31", "score": None,
+         "flagged": False, "scoreable": False, "reason": "short", "flags": []},
+    ]
+    body = render_page("company", page)
+    chart = body.split('<svg class="chart"')[1].split("</svg>")[0]
+    assert chart.count('class="bar flag"') == 1
+    assert chart.count('class="bar na"') == 1
+    assert "flag line 45" in chart
+    assert "<script" not in body.lower()
+    assert "http://" not in body

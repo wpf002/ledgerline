@@ -13,10 +13,10 @@ step. It listens on both loopback literals — `127.0.0.1:8787` and
 `[::1]:8787`, never off the machine — and redirects either of them to the one
 canonical address, **http://localhost:8787**, so the address bar always reads
 the same way. It reads what `ledgerline publish` wrote under `reports/feed/`:
-the JSONL signal feed, plus `watchlist.json`, `runs.json` and
+the JSONL signal feed, plus `watchlist.json`, `runs.json`, `verdict.json` and
 `companies/TICKER.json`.
 
-Four pages, and the JSON routes they sit beside:
+Five pages, and the JSON routes they sit beside:
 
 | Route               | Returns                                                        |
 | ------------------- | -------------------------------------------------------------- |
@@ -25,7 +25,8 @@ Four pages, and the JSON routes they sit beside:
 | `/company`          | the company lookup form; `?ticker=` redirects to the path below |
 | `/company/:ticker`  | one company: the plain reading, the thirteen measures, the filings behind each number, revisions, the provenance trail |
 | `/activity`         | the run log: when, what it cost, what it found, what it could not assess |
-| `/style.css`        | the one stylesheet all four pages link                          |
+| `/verdict`          | the detector's own test, check by check, and what can be tested next; the banner links here |
+| `/style.css`        | the one stylesheet every page links                             |
 | `/signals`          | the feed, cursor-paged (`?since_seq=0&limit=100`), at most 1,000 records a page |
 | `/signals/:ticker`  | one company's records                                          |
 | `/validation`       | the validation block alone                                     |
@@ -51,6 +52,8 @@ banner is the first thing in the body of every page**, and a banner painted by
 JavaScript after a fetch is a banner that does not exist with scripting off,
 on a page that still shows scores. `tests/unit/test_web_pages.py` pins the
 ordering. Nothing else on a page requires JavaScript either — there is none.
+The charts are inline SVG drawn on the server from published numbers
+(`service/svg.mjs`), and a bar's details show on hover through SVG `<title>`.
 
 **The signal is unvalidated.** The detector failed its own pre-registered
 test on 2026-08-30 (it caught 28.7% of the deteriorations it was built to

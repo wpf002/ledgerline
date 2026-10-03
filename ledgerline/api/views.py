@@ -10,7 +10,7 @@ would be the more visible one. So every join, every plain-language sentence,
 and the explain text itself are produced here, by the same functions the CLI
 prints, and written to disk beside signals.jsonl.
 
-Three files, matching the three questions a person asks in order:
+Four files, matching the questions a person asks in order:
 
   watchlist.json        who is being watched, can they be assessed, and what
                         did the last saved assessment say
@@ -18,6 +18,8 @@ Three files, matching the three questions a person asks in order:
   companies/<T>.json    one company: the latest assessment in full, the
                         filings its numbers came from, the figures it later
                         revised, and the plain-language reading of all of it
+  verdict.json          the detector's own test, check by check, and what
+                        can be tested next
 
 Every one of them carries the same validation block the signal feed carries,
 built through contract.validation_block() -> status.stamp(). A page cannot
@@ -39,7 +41,7 @@ import re
 import sqlite3
 from datetime import date
 
-from .. import edgar, groups, ingest, render
+from .. import edgar, groups, ingest, render, universe
 from . import contract
 
 FEED_DIR = os.path.dirname(contract.FEED_PATH)
@@ -335,6 +337,182 @@ def runs(limit: int = RUNS_LIMIT) -> dict:
         "runs": log,
         "validation": contract.validation_block(),
     }
+
+
+# ------------------------------------------------------------------ the test
+
+# The six checks the Phase 0 decision rule named, in the order reports/PHASE0.md
+# lists them, each said the way a person would ask about it. The page renders
+# these rows as written: a second wording of the rule in JavaScript would be a
+# second answer to "what did the test require".
+_CHECKS = (
+    ("false_positive_rate_per_quarter", "False alarms on quiet companies",
+     "Share of quarters at companies that never deteriorated where it raised a "
+     "flag."),
+    ("median_lead_months", "Warning time",
+     "Median months between its flag and the filing that made the trouble "
+     "public."),
+    ("positive_hit_rate", "Deteriorations caught",
+     "Share of the companies that did deteriorate that it flagged in time."),
+    ("regime_coverage", "Market eras it worked in",
+     "Stretches of market history in which it caught at least one case ahead "
+     "of time."),
+    ("sample_size", "Enough cases to judge",
+     "Deteriorations and quiet companies in the sealed test half."),
+    ("beats_naive_baseline", "Beat a two-line rule",
+     "Its false-alarm rate had to be lower than the simple rule's."),
+)
+
+# The six market eras in plain words. universe.REGIMES carries the
+# developer's notes on why each era is in the set; this is what a reader needs.
+_ERA_PLAIN = {
+    "2014-16-energy": "Oil fell from about $100 a barrel to about $26. Shale "
+                      "drillers, oilfield services, offshore, mining.",
+    "2015-18-retail": "Store-based retailers and consumer brands losing share.",
+    "2017-19-idiosyncratic": "No market-wide slump. Single-company accounting "
+                             "and demand problems. A detector that only works "
+                             "in a falling market fails here.",
+    "2020-covid": "Demand swung hard both ways. Tests false alarms at companies "
+                  "whose working capital lurched and then recovered.",
+    "2021-22-growth-unwind": "Spending normalized after the stimulus years.",
+    "2023-25-rate-shock": "Rates stayed high. Debt coming due, commercial "
+                          "property, heavily borrowed companies.",
+}
+
+_BASELINE_RULES = {
+    "ttm_ocf_negative_and_net_debt_positive":
+        "Flag a company when its cash from operations over the last four "
+        "quarters is negative and it owes more than it holds in cash.",
+}
+
+
+def _pct(v: float, digits: int = 1) -> str:
+    """0.6 reads as 60%, 0.287 as 28.7%, 0.0383 at two digits as 3.83%."""
+    text = f"{v * 100:.{digits}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text + "%"
+
+
+def _check_row(key: str, check: dict) -> dict:
+    """One check as the page shows it: the result and the bar in words, plus
+    the three numbers the page needs to draw the bar and nothing it would
+    have to work out itself."""
+    v, lim = check["value"], check["limit"]
+    meter = None
+    if key == "false_positive_rate_per_quarter":
+        result, required = _pct(v, 2), f"at most {_pct(lim)}"
+        meter = {"value": v, "limit": lim, "max": 0.06, "kind": "ceiling"}
+    elif key == "median_lead_months":
+        result, required = f"{v} months", f"at least {lim} months"
+        meter = {"value": v, "limit": lim, "max": 24, "kind": "floor"}
+    elif key == "positive_hit_rate":
+        result, required = _pct(v), f"at least {_pct(lim)}"
+        meter = {"value": v, "limit": lim, "max": 1.0, "kind": "floor"}
+    elif key == "regime_coverage":
+        total = len(universe.REGIMES)
+        result, required = f"{v} of {total}", f"at least {lim}"
+        meter = {"value": v, "limit": lim, "max": total, "kind": "floor"}
+    elif key == "sample_size":
+        result = (f"{v['positives']} deteriorations, {v['controls']} quiet "
+                  "companies")
+        required = f"at least {lim['positives']} and {lim['controls']}"
+    else:  # beats_naive_baseline
+        result = f"{_pct(v, 2)} against the rule's {_pct(lim, 2)}"
+        required = f"below {_pct(lim, 2)}"
+        meter = {"value": v, "limit": lim, "max": 0.06, "kind": "ceiling"}
+    name, explain = next((n, e) for k, n, e in _CHECKS if k == key)
+    return {"key": key, "name": name, "explain": explain, "result": result,
+            "required": required, "passed": bool(check["pass"]),
+            "meter": meter}
+
+
+def _registry() -> dict:
+    """What can be tested next: the hypotheses on record and the reserved sets
+    they can be tested on. A registry that can't be read is reported as such
+    on the page; the test result above it doesn't depend on it."""
+    from .. import hypothesis
+    from ..validate import retest
+    try:
+        reg = hypothesis.load()
+        report = retest.status_report()
+    except (RuntimeError, OSError, KeyError, ValueError) as err:
+        return {"error": str(err), "hypotheses": [], "reserved": [],
+                "alpha": None}
+    hyps = [{
+        "id": h["id"], "name": h.get("name"),
+        "description": h.get("description"), "created": h.get("created"),
+        "status": h.get("status"),
+        "verdict": (h.get("result") or {}).get("verdict"),
+        "commit": (h.get("commit") or "")[:7],
+        "registration": ({k: h["registration"].get(k) for k in
+                          ("reserved", "registered_on", "alpha",
+                           "scoreable_from")}
+                         if h.get("registration") else None),
+    } for h in sorted(reg["hypotheses"].values(), key=lambda x: x["id"])]
+    sets = [{
+        "name": s["name"], "reserved_on": s.get("reserved_on"),
+        "n_companies": s.get("n_companies"),
+        "n_checkpoints": len(s.get("cutoffs") or []),
+        "first_checkpoint": min(s["cutoffs"]) if s.get("cutoffs") else None,
+        "last_checkpoint": max(s["cutoffs"]) if s.get("cutoffs") else None,
+        "registration_closes": hypothesis.registration_deadline(s["name"]),
+        "earliest_scoreable": s.get("earliest_scoreable_h4"),
+        "spent": bool(s.get("spent")),
+    } for s in report["reserved"].values()]
+    return {"error": None, "hypotheses": hyps, "reserved": sets,
+            "alpha": {"budget": report["alpha_budget"],
+                      "spent": report["alpha_spent"]}}
+
+
+def verdict() -> dict:
+    """The page behind the banner's link: the test, check by check, the
+    numbers it reported without grading, how to re-run it, and what can be
+    tested next. Read from the frozen record; nothing here is recomputed."""
+    from .. import status
+    record = status.load()
+    checks = [_check_row(k, record["checks"][k]) for k, _, _ in _CHECKS
+              if k in record["checks"]]
+    caught = set(record.get("regimes_detected") or [])
+    baseline = record.get("baseline") or {}
+    return {
+        "generated": date.today().isoformat(),
+        "validation": contract.validation_block(),
+        "scored_on": record["scored_on"],
+        "verdict": record["verdict"],
+        "split": record.get("split"),
+        "checks": checks,
+        "n_failed": sum(1 for c in checks if not c["passed"]),
+        "per_filer": {"value": record.get("false_positive_rate_per_filer"),
+                      "control_filer_quarters":
+                          record.get("control_filer_quarters")},
+        "cases": {"positives": record.get("n_positive"),
+                  "controls": record.get("n_control"),
+                  "censored": record.get("n_censored_positives"),
+                  "assessable_positives": record.get("n_assessable_positives")},
+        "regimes": [{"name": _era_name(k), "detail": _ERA_PLAIN.get(k, v[2]),
+                     "caught": k in caught}
+                    for k, v in universe.REGIMES.items()],
+        "baseline": {
+            "rule": _BASELINE_RULES.get(baseline.get("rule", ""),
+                                        baseline.get("rule")),
+            "fpr": baseline.get("false_positive_rate_per_quarter"),
+            "control_filer_quarters": baseline.get("control_filer_quarters"),
+        },
+        "fingerprints": {"decision_rule": record.get("prereg_sha256"),
+                         "split": record.get("split_sha256")},
+        "writeup": record.get("writeup"),
+        "registry": _registry(),
+    }
+
+
+def _era_name(key: str) -> str:
+    """'2014-16-energy' reads as '2014–16 energy', '2020-covid' as '2020 covid'."""
+    m = re.match(r"^(\d{4})-(?:(\d{2})-)?(.*)$", key)
+    if not m:
+        return key
+    years = f"{m.group(1)}–{m.group(2)}" if m.group(2) else m.group(1)
+    return f"{years} {m.group(3).replace('-', ' ')}"
 
 
 def _form_of(claims: list[tuple[str | None, str | None, str | None]],
@@ -661,7 +839,7 @@ def _sweep_company_files(dir_path: str, keep: set[str]) -> int:
 
 
 def write_all(out_dir: str | None = None, companies: bool = True) -> dict:
-    """Write watchlist.json, runs.json and companies/<TICKER>.json.
+    """Write watchlist.json, runs.json, verdict.json and companies/<TICKER>.json.
 
     One connection for the whole job: the per-company files are ~1,500 small
     reads against the same database, and reopening it per company is the shape
@@ -683,6 +861,7 @@ def write_all(out_dir: str | None = None, companies: bool = True) -> dict:
         _write(os.path.join(out_dir, "watchlist.json"), wl, inside=out_dir)
         job_log = runs()
         _write(os.path.join(out_dir, "runs.json"), job_log, inside=out_dir)
+        _write(os.path.join(out_dir, "verdict.json"), verdict(), inside=out_dir)
         written = 0
         dropped = 0
         refused: list[str] = []

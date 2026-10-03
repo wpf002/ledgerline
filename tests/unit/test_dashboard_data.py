@@ -35,7 +35,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ledgerline import cli, csvio, edgar, emit, groups, render, signals_v3, status
-from ledgerline.api import views
+from ledgerline.api import contract, views
 from tests.unit.test_signal_store import fired_verdict, unscoreable_verdict
 
 runner = CliRunner()
@@ -664,3 +664,24 @@ def test_the_verdict_line_is_one_cell_and_not_four(isolated_db, tmp_path):
     assert len(first) == 1
     assert first[0].startswith("# ")
     assert "28.7%" in first[0] and "3.83%" in first[0]
+
+
+def test_the_test_page_reads_the_frozen_record_check_by_check():
+    """verdict.json is what /verdict renders: the six pre-registered checks in
+    the write-up's order, each with its result and its bar in words, and the
+    failed count taken from the frozen record rather than restated."""
+    v = views.verdict()
+    record = status.load()
+    assert [c["key"] for c in v["checks"]] == [
+        "false_positive_rate_per_quarter", "median_lead_months",
+        "positive_hit_rate", "regime_coverage", "sample_size",
+        "beats_naive_baseline"]
+    assert v["n_failed"] == sum(1 for c in record["checks"].values()
+                                if not c["pass"])
+    hit = next(c for c in v["checks"] if c["key"] == "positive_hit_rate")
+    assert (hit["result"], hit["required"], hit["passed"]) == \
+        ("28.7%", "at least 60%", False)
+    assert v["validation"] == contract.validation_block()
+    assert v["registry"]["error"] is None
+    assert v["registry"]["hypotheses"][0]["id"] == "h0"
+    assert all(r["caught"] for r in v["regimes"])

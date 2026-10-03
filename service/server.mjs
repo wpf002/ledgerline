@@ -303,7 +303,20 @@ function serveOverview(res) {
     }));
     return;
   }
-  sendHtml(res, 200, pages.overview(digestOf(records)));
+  // The watchlist's counts and the latest run, when they've been published,
+  // so the front page can say how much is being watched and when it last
+  // read the SEC. Both are already-published numbers; neither is required.
+  const extra = {};
+  const wl = readView("watchlist.json");
+  if (wl.ok) {
+    const { n_companies, n_assessable, n_checked, n_flagged, generated } = wl.data;
+    extra.watchlist = { n_companies, n_assessable, n_checked, n_flagged, generated };
+  }
+  const log = readView("runs.json");
+  if (log.ok && Array.isArray(log.data.runs) && log.data.runs[0]) {
+    extra.lastRun = log.data.runs[0];
+  }
+  sendHtml(res, 200, pages.overview(digestOf(records), extra));
 }
 
 function serveWatchlist(res, url) {
@@ -428,8 +441,28 @@ function serveActivity(res) {
   sendHtml(res, 200, pages.activity(got.data));
 }
 
-// One stylesheet, one route: four pages carrying four copies of it would be
-// four places for the verdict banner's styling to drift apart.
+// The detector's own test, check by check: the page the banner links to.
+function serveVerdict(res) {
+  const got = readView("verdict.json");
+  if (!got.ok) {
+    if (got.missing) {
+      notPublished(res, { title: "The test", current: "/verdict",
+        rel: "verdict.json" });
+      return;
+    }
+    sendHtml(res, 503, pages.message({
+      title: "The test", current: "/verdict", validation: anyValidation(),
+      heading: "The record of the test cannot be read",
+      paragraphs: [pages.esc(got.error) + ".",
+        "Rewrite it: <code>ledgerline publish</code>."],
+    }));
+    return;
+  }
+  sendHtml(res, 200, pages.verdict(got.data));
+}
+
+// One stylesheet, one route: five pages carrying five copies of it would be
+// five places for the verdict banner's styling to drift apart.
 function serveStylesheet(res) {
   let css;
   try {
@@ -442,7 +475,7 @@ function serveStylesheet(res) {
   res.end(css);
 }
 
-const HTML_ROUTES = new Set(["", "watchlist", "company", "activity"]);
+const HTML_ROUTES = new Set(["", "watchlist", "company", "activity", "verdict"]);
 
 function handle(req, res) {
   // Read-only by construction: the append-only invariant cannot be enforced
@@ -487,6 +520,8 @@ function handle(req, res) {
       serveWatchlist(res, url);
     } else if (parts[0] === "activity" && parts.length === 1) {
       serveActivity(res);
+    } else if (parts[0] === "verdict" && parts.length === 1) {
+      serveVerdict(res);
     } else if (parts[0] === "company" && parts.length === 1) {
       const asked = url.searchParams.get("ticker");
       if (asked && asked.trim()) {
@@ -584,7 +619,7 @@ function handle(req, res) {
   } else {
     send(res, 404, {
       error: "unknown path",
-      routes: ["/", "/watchlist", "/company/:ticker", "/activity",
+      routes: ["/", "/watchlist", "/company/:ticker", "/activity", "/verdict",
                "/signals", "/signals/:ticker", "/validation", "/digest"],
       validation,
     });

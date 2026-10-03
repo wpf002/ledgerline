@@ -80,7 +80,7 @@ ledgerline publish        # write the files the viewer reads
 node service/server.mjs   # then open http://localhost:8787
 ```
 
-Four pages, all rendered on the server, none of them needing JavaScript:
+Five pages, all rendered on the server, none of them needing JavaScript:
 
 | Page | What is on it |
 | ---- | ------------- |
@@ -88,10 +88,12 @@ Four pages, all rendered on the server, none of them needing JavaScript:
 | `/watchlist` | every watched company; filter by group or by whether it can be assessed, search by ticker or name |
 | `/company/TICKER` | one company: the same plain reading `ledgerline explain` prints, the thirteen measures, the filings every number came from, anything later revised, the provenance trail |
 | `/activity` | the run log: when, what it cost, what it read, what it could not assess |
+| `/verdict` | the detector's own test: the six pre-registered checks, what each required, how to re-run it, and what can be tested next |
 
 Nothing is installed and nothing is downloaded — it reads the files `publish`
 wrote and stays on loopback. Every page leads with the result of the failed
-test, before the masthead and before any number. A page with nothing to show
+test, before the sidebar and before any number. The charts are drawn on the
+server as inline SVG; hover a bar for its date and value. A page with nothing to show
 says which of the four reasons it is empty and which command would fill it: an
 unknown group is a typo, a group nobody has filled in is not.
 
@@ -197,6 +199,6 @@ scripts/cold_clone_test.sh
 ```
 
 Clones committed HEAD into a temp directory, bootstraps it with an empty cache,
-and runs watch, fetch, check, scan, explain, publish and the four web pages on
+and runs watch, fetch, check, scan, explain, publish and four of the web pages on
 three companies. Same machine, so it shares `~/.pyenv` and the network; it
 never touches this machine's background jobs. Last run 2026-10-03: 18 of 18.

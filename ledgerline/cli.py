@@ -1397,8 +1397,9 @@ def publish(since_seq: int = typer.Option(0, help="Continue an earlier export: "
     if pages:
         res = views.write_all(os.path.dirname(os.path.abspath(path)))
         typer.echo(f"Also wrote watchlist.json ({res['watched']} companies), "
-                   f"runs.json ({res['runs']} runs) and {res['companies']} "
-                   f"company files under {os.path.join(res['dir'], 'companies')}.")
+                   f"runs.json ({res['runs']} runs), verdict.json and "
+                   f"{res['companies']} company files under "
+                   f"{os.path.join(res['dir'], 'companies')}.")
         if res["refused"]:
             names = ", ".join(res["refused"][:10])
             more = ("" if len(res["refused"]) <= 10

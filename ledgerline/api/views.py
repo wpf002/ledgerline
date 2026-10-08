@@ -346,21 +346,18 @@ def runs(limit: int = RUNS_LIMIT) -> dict:
 # these rows as written: a second wording of the rule in JavaScript would be a
 # second answer to "what did the test require".
 _CHECKS = (
-    ("false_positive_rate_per_quarter", "False alarms on quiet companies",
-     "Share of quarters at companies that never deteriorated where it raised a "
-     "flag."),
+    ("false_positive_rate_per_quarter", "False alarms",
+     "Flags per quarter at companies that never deteriorated."),
     ("median_lead_months", "Warning time",
-     "Median months between its flag and the filing that made the trouble "
-     "public."),
+     "Months from its flag to the filing that showed the trouble."),
     ("positive_hit_rate", "Deteriorations caught",
-     "Share of the companies that did deteriorate that it flagged in time."),
-    ("regime_coverage", "Market eras it worked in",
-     "Stretches of market history in which it caught at least one case ahead "
-     "of time."),
-    ("sample_size", "Enough cases to judge",
-     "Deteriorations and quiet companies in the sealed test half."),
-    ("beats_naive_baseline", "Beat a two-line rule",
-     "Its false-alarm rate had to be lower than the simple rule's."),
+     "Share of deteriorating companies it flagged in time."),
+    ("regime_coverage", "Market eras",
+     "Eras where it caught at least one case early."),
+    ("sample_size", "Sample size",
+     "Companies that deteriorated, and ones that didn't."),
+    ("beats_naive_baseline", "Beat a simple rule",
+     "Fewer false alarms than a two-line rule."),
 )
 
 # The six market eras in plain words. universe.REGIMES carries the
@@ -381,8 +378,8 @@ _ERA_PLAIN = {
 
 _BASELINE_RULES = {
     "ttm_ocf_negative_and_net_debt_positive":
-        "Flag a company when its cash from operations over the last four "
-        "quarters is negative and it owes more than it holds in cash.",
+        "Flag any company with negative operating cash flow over the last "
+        "year and more debt than cash.",
 }
 
 
@@ -414,12 +411,11 @@ def _check_row(key: str, check: dict) -> dict:
         result, required = f"{v} of {total}", f"at least {lim}"
         meter = {"value": v, "limit": lim, "max": total, "kind": "floor"}
     elif key == "sample_size":
-        result = (f"{v['positives']} deteriorations, {v['controls']} quiet "
-                  "companies")
-        required = f"at least {lim['positives']} and {lim['controls']}"
+        result = f"{v['positives']} and {v['controls']}"
+        required = f"{lim['positives']} and {lim['controls']}"
     else:  # beats_naive_baseline
-        result = f"{_pct(v, 2)} against the rule's {_pct(lim, 2)}"
-        required = f"below {_pct(lim, 2)}"
+        result = _pct(v, 2)
+        required = f"under {_pct(lim, 2)}"
         meter = {"value": v, "limit": lim, "max": 0.06, "kind": "ceiling"}
     name, explain = next((n, e) for k, n, e in _CHECKS if k == key)
     return {"key": key, "name": name, "explain": explain, "result": result,

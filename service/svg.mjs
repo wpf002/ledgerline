@@ -129,16 +129,13 @@ export function scoreHistory(rows, threshold = 45) {
   });
 
   const ly = f1(y(threshold));
-  const limit = `<line class="limit" x1="${L}" x2="${W - R}" y1="${ly}" y2="${ly}"/>` +
-    `<text class="limit-label" x="${W - R - 4}" y="${f1(y(threshold) - 6)}" ` +
-    `text-anchor="end">flag line ${threshold}</text>`;
+  const limit = `<line class="limit" x1="${L}" x2="${W - R}" y1="${ly}" y2="${ly}">` +
+    `<title>Flag line, ${threshold}</title></line>`;
 
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" ` +
     `aria-label="Concern score at each of ${pts.length} saved assessments, ` +
     `oldest to newest. Every one is listed in the table below the chart.">` +
-    `<defs><pattern id="hatch-na" width="5" height="5" patternUnits="userSpaceOnUse" ` +
-    `patternTransform="rotate(45)"><line class="hatch" x1="0" y1="0" x2="0" y2="5"/>` +
-    `</pattern></defs>${grid}${bars}${limit}${labels}</svg>`;
+    `${grid}${bars}${limit}${labels}</svg>`;
 }
 
 // --------------------------------------------------------- filing timeline
@@ -199,7 +196,7 @@ export function runHistory(runs) {
   if (pts.length < 2) return "";
   const vals = pts.map((r) => Number(r.universe_hits) || 0);
   const top = Math.max(1, ...vals);
-  const W = 760, H = 200, L = 40, R = 10, T = 14, B = 28;
+  const W = 760, H = 168, L = 40, R = 10, T = 12, B = 28;
   const pw = W - L - R, ph = H - T - B;
   const step = pw / pts.length;
   const bw = Math.max(3, Math.min(30, step * 0.62));

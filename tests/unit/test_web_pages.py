@@ -151,6 +151,23 @@ def statement() -> str:
     return contract.validation_block()["statement"]
 
 
+def banner_of(body: str) -> str:
+    """The banner element, opening tag through its closing tag."""
+    start = body.index('<div class="banner"')
+    return body[start:body.index("</div>", start)]
+
+
+def carries_verdict(body: str) -> bool:
+    """The banner says the test failed, with the frozen catch rate and the
+    bar it missed, and carries the status for programs that check for it."""
+    m = contract.validation_block()["measured"]
+    b = banner_of(body)
+    return ("Failed its own test." in b
+            and f"{m['positive_hit_rate'] * 100:.1f}%" in b
+            and f"{m['positive_hit_rate_floor'] * 100:.0f}%" in b
+            and 'data-status="UNVALIDATED-KILL"' in b)
+
+
 # ------------------------------------------------------- the verdict, first
 
 
@@ -175,8 +192,8 @@ def test_the_verdict_is_the_first_thing_on_every_page(site, path, expect):
     assert status == expect
     head, _, rest = body.partition("<body>")
     assert "<body>" not in head
-    at = rest.index("failed its own pre-registered test")
-    assert statement() in rest
+    at = rest.index('<div class="banner"')
+    assert carries_verdict(rest)
     for marker in AFTER_THE_BANNER:
         assert at < rest.index(marker), f"{marker} renders before the verdict"
 
@@ -202,7 +219,7 @@ def test_one_stylesheet_serves_every_page(site):
     status, headers, css = site.request("/style.css")
     assert status == 200
     assert headers["Content-Type"].startswith("text/css")
-    assert "--flag" in css and ".banner" in css
+    assert "--danger" in css and ".banner" in css
 
 
 # --------------------------------------------- nothing to show is an answer
@@ -216,7 +233,7 @@ def test_a_page_with_no_data_says_what_to_run_and_still_shows_the_verdict(site):
     status, _, body = site.request("/activity")
     assert status == 503
     assert "runs.json" in body and "ledgerline publish" in body
-    assert statement() in body
+    assert carries_verdict(body)
 
 
 def test_an_unknown_ticker_gets_a_page_that_says_which_thing_went_wrong(site):
@@ -227,7 +244,7 @@ def test_an_unknown_ticker_gets_a_page_that_says_which_thing_went_wrong(site):
     assert status == 404
     assert "not on your watchlist" in body
     assert "ledgerline watch --add NOPE" in body
-    assert statement() in body
+    assert carries_verdict(body)
 
     # A ticker-shaped path segment is matched, never trusted: companies/ is a
     # directory of files and ".." is a ticker-shaped string.
@@ -264,12 +281,11 @@ def test_an_unknown_group_and_an_empty_group_say_different_things(site):
 def test_a_company_nothing_was_assessed_for_shows_words_not_a_number(site):
     """The store's rule at the surface a person reads: a score of 0 next to a
     company nobody assessed reads as a clean bill of health and means the
-    opposite. QUIET has no saved assessment, so its row says so and carries
-    the chip that says which command would produce one."""
+    opposite. QUIET has no saved assessment, so its row says so in words and
+    draws no score."""
     body = site.body("/watchlist?q=QUIET")
     assert "nothing assessed yet" in body
-    assert "no assessment saved" in body
-    assert "of 100" not in body
+    assert 'class="score' not in body
 
 
 def test_a_score_carries_its_scale_and_a_quiet_result_is_not_a_clean_bill(site):
@@ -277,9 +293,9 @@ def test_a_score_carries_its_scale_and_a_quiet_result_is_not_a_clean_bill(site):
     be read as the tool working carries the failed test. A fuller dashboard
     must not become a claim that the detector works."""
     body = site.body("/watchlist")
-    assert "of 100" in body
-    assert "flagged at 45 with at least two measures out of line" in body
-    assert "not a clean bill of health" in body
+    assert 'class="sbar"' in body and "of 100" in body
+    assert "A score of 45 with two measures out of line is a flag" in body
+    assert "No flag doesn't mean the company is fine" in body
 
 
 def test_every_number_on_a_company_page_names_the_filing_it_came_from(site):
@@ -299,10 +315,8 @@ def test_every_number_on_a_company_page_names_the_filing_it_came_from(site):
         assert f'href="https://www.sec.gov/Archives/edgar/data/1/' \
                f'{accession.replace("-", "")}/{accession}-index.htm"' in body
     # Plain names in the trail, not the identifiers it is keyed by. The
-    # explain text above it does print `cash_conversion_gap` once, in the
-    # parenthetical `ledgerline explain` has always printed -- docs/VOICE.md
-    # allows the technical term beside the plain one, not instead of it.
-    trail = body.split("Where each number came from")[1]
+    # measures table above it carries the technical name as a hover title.
+    trail = body.split('id="sources"')[1]
     assert "cash-vs-sales" in trail
     assert "cash_conversion_gap" not in trail and "operating_cash_flow" not in trail
 
@@ -354,7 +368,7 @@ def test_an_empty_assessability_filter_never_claims_the_opposite_state(site):
     # The reading that would be wrong: the empty table is about the filter,
     # not a finding that every watched company can be assessed.
     assert "companies cannot be assessed" not in body
-    assert "until that has run a company is neither" in body
+    assert "Until that has run a company is neither" in body
 
     narrowed = site.body("/watchlist?assessable=unknown&q=ZZNOPE")
     assert "Every watched company has been checked" not in narrowed
@@ -399,15 +413,13 @@ def test_the_overview_says_a_replay_is_a_replay():
     body = render_page("overview", _digest(
         {"run_date": "2025-11-15", "source": "replay", "split": "tuning",
          "scoreable": 453, "unscoreable": 18, "gated_in": 6}))
-    assert "a replay over the practice half" in body
-    assert "the companies the thresholds were fitted on" in body
-    assert "not a live run" in body
-    assert ">source</dt><dd>replay<" in body.replace("\n", "")
-    assert ">split</dt><dd>tuning<" in body.replace("\n", "")
+    assert "A replay on the practice half" in body
+    assert "the companies used to tune the thresholds" in body
+    assert "Not a live result" in body
     # A live run is not described as a replay.
     live = render_page("overview", _digest(
         {"run_date": "2026-08-30", "source": "scan", "scoreable": 1}))
-    assert "a live run on 2026-08-30" in live and "replay" not in live
+    assert "A live run on Aug 30, 2026" in live and "replay" not in live.lower()
 
 
 def test_a_replayed_assessment_says_so_in_the_watchlist_cell():
@@ -424,7 +436,7 @@ def test_a_replayed_assessment_says_so_in_the_watchlist_cell():
                                      "n_companies": 1, "n_assessable": 1,
                                      "validation": contract.validation_block()},
                        {"q": "", "group": "", "assessable": "", "page": 1})
-    assert "replayed over the practice half" in body
+    assert ">replay</span>" in body and "Replayed on the practice half" in body
 
 
 def test_the_published_watchlist_row_carries_its_own_provenance(site):
@@ -458,7 +470,7 @@ def test_an_undecodable_path_segment_is_answered_not_fatal(site):
     status, _, body = site.request("/company/%")
     assert status == 404
     assert "is not a ticker symbol" in body
-    assert statement() in body
+    assert carries_verdict(body)
 
     # The JSON route decoded the same way, at the same cost.
     json_status, _, json_body = site.request("/signals/%E0%A4%A")
@@ -486,7 +498,7 @@ def test_a_wrong_shaped_published_file_renders_a_page_not_a_dead_socket(site):
     assert status == 503
     assert "could not be rendered" in body
     assert "ledgerline publish" in body
-    assert statement() in body, "the verdict travels with the failure page"
+    assert carries_verdict(body), "the verdict travels with the failure page"
     assert not crashed(site), "the service exited rendering a wrong-shaped file"
 
     # A list-shaped key holding a string is ignored rather than mapped over:
@@ -631,17 +643,17 @@ def test_a_company_that_could_not_be_assessed_claims_neither_quiet_nor_traced():
     thirteen measures were evaluated. render.py:12 records the same reading
     being printed at the terminal as a score of 0.0."""
     body = render_page("company", _company_page(scoreable=False, label="TRACED"))
-    trail = body.split("Where each number came from")[1]
-    assert "could not be assessed, so no measure was evaluated" in trail
+    trail = body.split('id="sources"')[1]
+    assert "Not assessed, so no measure was evaluated" in trail
     assert "No measure broke" not in trail
-    assert "was traced back to the filing it came from" not in trail
+    assert "Every figure is traced" not in trail
 
     # A company that WAS assessed and stayed quiet keeps both sentences: it is
     # the other piece of news, and the two must not read the same.
     quiet = render_page("company", _company_page(scoreable=True, label="TRACED"))
-    quiet_trail = quiet.split("Where each number came from")[1]
+    quiet_trail = quiet.split('id="sources"')[1]
     assert "No measure broke" in quiet_trail
-    assert "was traced back to the filing it came from" in quiet_trail
+    assert "Every figure is traced" in quiet_trail
 
 
 def test_the_watchlist_header_tells_unchecked_apart_from_checked_and_stuck():
@@ -663,10 +675,11 @@ def test_the_watchlist_header_tells_unchecked_apart_from_checked_and_stuck():
 
     stuck = header(n_assessable=0, n_checked=1, assessable=False)
     assert "None of them have been checked yet" not in stuck
-    assert "have been checked, and none of them can be assessed yet" in stuck
+    assert "checked, and none can be assessed yet" in stuck
 
     fine = header(n_assessable=1, n_checked=1, assessable=True)
-    assert "have been checked and can be assessed" in fine
+    assert "none can be assessed yet" not in fine
+    assert "None of them have been checked yet" not in fine
 
 
 def test_nothing_assessed_yet_is_a_first_run_state_not_an_outage(site):
@@ -678,9 +691,9 @@ def test_nothing_assessed_yet_is_a_first_run_state_not_an_outage(site):
         pass
     status, _, body = site.request("/")
     assert status == 200
-    assert "Nothing has been assessed yet" in body
+    assert "Nothing assessed yet" in body
     assert "score FMC --emit" in body
-    assert body.index("UNVALIDATED-KILL") < body.index("Nothing has been assessed yet")
+    assert body.index("UNVALIDATED-KILL") < body.index("Nothing assessed yet")
 
 
 # ------------------------------------------------ the page the banner links to
@@ -711,7 +724,7 @@ def test_the_test_page_unpublished_says_what_to_run(site):
     code, _, body = site.request("/verdict")
     assert code == 503
     assert "verdict.json" in body and "ledgerline publish" in body
-    assert statement() in body
+    assert carries_verdict(body)
 
 
 # ------------------------------------------------------------ what the charts say
@@ -756,6 +769,6 @@ def test_the_score_history_chart_draws_what_was_saved():
     chart = body.split('<svg class="chart"')[1].split("</svg>")[0]
     assert chart.count('class="bar flag"') == 1
     assert chart.count('class="bar na"') == 1
-    assert "flag line 45" in chart
+    assert "Flag line, 45" in chart
     assert "<script" not in body.lower()
     assert "http://" not in body

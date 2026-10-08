@@ -260,12 +260,9 @@ function sendHtml(res, status, html) {
 function notPublished(res, { title, current, rel }) {
   sendHtml(res, 503, pages.message({
     title, current, validation: anyValidation(),
-    heading: "This page has not been written yet",
+    heading: "Not published yet",
     paragraphs: [
-      `The viewer reads <code>${pages.esc(rel)}</code>, and there is no such ` +
-      `file under <code>${pages.esc(PAGES_DIR)}</code>.`,
-      "Write it: <code>ledgerline publish</code>. That reads what has already " +
-      "been saved and assesses nothing.",
+      `Run <code>ledgerline publish</code> to write <code>${pages.esc(rel)}</code>.`,
     ],
   }));
 }
@@ -277,9 +274,9 @@ function serveOverview(res) {
   } catch (err) {
     sendHtml(res, 503, pages.message({
       title: "Overview", current: "/", validation: anyValidation(),
-      heading: "The assessment feed cannot be read",
+      heading: "Can't read the assessment feed",
       paragraphs: [pages.esc(String(err.message ?? err)) + ".",
-        "Write it: <code>ledgerline publish</code>."],
+        "Run <code>ledgerline publish</code>."],
     }));
     return;
   }
@@ -291,14 +288,11 @@ function serveOverview(res) {
     // day, so on a new install it usually left the page empty anyway.
     sendHtml(res, 200, pages.message({
       title: "Overview", current: "/", validation: anyValidation(),
-      heading: "Nothing has been assessed yet",
+      heading: "Nothing assessed yet",
       paragraphs: [
-        "Scans keep each watched company's figures current but don't assess " +
-        "anything. Assessing is opt-in, because this detector failed its own test.",
-        "Assess one company and save the result: " +
-        "<code>ledgerline score FMC --emit</code>, then " +
-        "<code>ledgerline publish</code>. The watchlist and company pages work " +
-        "without it.",
+        "Scans keep figures current but don't assess anything.",
+        "To assess one company: <code>ledgerline score FMC --emit</code>, then " +
+        "<code>ledgerline publish</code>.",
       ],
     }));
     return;
@@ -329,9 +323,9 @@ function serveWatchlist(res, url) {
     }
     sendHtml(res, 503, pages.message({
       title: "Watchlist", current: "/watchlist", validation: anyValidation(),
-      heading: "The watchlist file cannot be read",
+      heading: "Can't read the watchlist",
       paragraphs: [pages.esc(got.error) + ".",
-        "Rewrite it: <code>ledgerline publish</code>."],
+        "Run <code>ledgerline publish</code>."],
     }));
     return;
   }
@@ -354,10 +348,10 @@ function serveCompanyIndex(res, note) {
   if (!got.ok) {
     sendHtml(res, 503, pages.message({
       title: "Company", current: "/company", validation: anyValidation(),
-      heading: note ? "That company has no page here" : "Open a company",
+      heading: note ? "No page for that company" : "Open a company",
       paragraphs: [
-        note ?? "Name a company to open: <code>/company/FMC</code>.",
-        "The pages a viewer reads are written by <code>ledgerline publish</code>.",
+        note ?? "Try <code>/company/FMC</code>.",
+        "Pages are written by <code>ledgerline publish</code>.",
       ],
     }));
     return;
@@ -384,7 +378,7 @@ function serveCompany(res, raw) {
   const ticker = (decoded ?? "").toUpperCase();
   if (decoded === null || !TICKER.test(ticker)) {
     serveCompanyIndex(res, `“${pages.esc(raw)}” is not a ticker symbol. ` +
-      "Try one like <code>/company/FMC</code>.");
+      "Try <code>/company/FMC</code>.");
     return;
   }
   const got = readView(path.join("companies", `${ticker}.json`));
@@ -395,9 +389,9 @@ function serveCompany(res, raw) {
   if (!got.missing) {
     sendHtml(res, 503, pages.message({
       title: ticker, current: "/company", validation: anyValidation(),
-      heading: `${pages.esc(ticker)}'s page cannot be read`,
+      heading: `Can't read ${pages.esc(ticker)}'s page`,
       paragraphs: [pages.esc(got.error) + ".",
-        "Rewrite it: <code>ledgerline publish</code>."],
+        "Run <code>ledgerline publish</code>."],
     }));
     return;
   }
@@ -407,19 +401,18 @@ function serveCompany(res, raw) {
   // person's setup, and this service would be guessing at it.
   const wl = readView("watchlist.json");
   if (!wl.ok) {
-    serveCompanyIndex(res, `No page has been written for ${pages.esc(ticker)}, ` +
-      "and neither has the watchlist, so this service cannot say whether it " +
-      "is being watched. Run <code>ledgerline publish</code>.");
+    serveCompanyIndex(res, `No page for ${pages.esc(ticker)} and no watchlist ` +
+      "published yet. Run <code>ledgerline publish</code>.");
     return;
   }
   const watched = (wl.data.companies || []).some(
     (c) => (c.ticker || "").toUpperCase() === ticker);
   serveCompanyIndex(res, watched
-    ? `${pages.esc(ticker)} is on your watchlist, but no page has been ` +
-      "written for it yet. Run <code>ledgerline publish</code>."
-    : `${pages.esc(ticker)} is not on your watchlist, so nothing has been ` +
-      `read about it. Add it: <code>ledgerline watch --add ${pages.esc(ticker)}` +
-      "</code>, then <code>ledgerline fetch</code>.");
+    ? `${pages.esc(ticker)} is on your watchlist but has no page yet. ` +
+      "Run <code>ledgerline publish</code>."
+    : `${pages.esc(ticker)} is not on your watchlist. Add it with ` +
+      `<code>ledgerline watch --add ${pages.esc(ticker)}</code>, then ` +
+      "<code>ledgerline fetch</code>.");
 }
 
 function serveActivity(res) {
@@ -432,9 +425,9 @@ function serveActivity(res) {
     }
     sendHtml(res, 503, pages.message({
       title: "Activity", current: "/activity", validation: anyValidation(),
-      heading: "The run log cannot be read",
+      heading: "Can't read the run log",
       paragraphs: [pages.esc(got.error) + ".",
-        "Rewrite it: <code>ledgerline publish</code>."],
+        "Run <code>ledgerline publish</code>."],
     }));
     return;
   }
@@ -452,9 +445,9 @@ function serveVerdict(res) {
     }
     sendHtml(res, 503, pages.message({
       title: "The test", current: "/verdict", validation: anyValidation(),
-      heading: "The record of the test cannot be read",
+      heading: "Can't read the test record",
       paragraphs: [pages.esc(got.error) + ".",
-        "Rewrite it: <code>ledgerline publish</code>."],
+        "Run <code>ledgerline publish</code>."],
     }));
     return;
   }
@@ -659,9 +652,8 @@ function renderFailure(req, res, err) {
         title: "Not rendered", current: `/${first}`, validation: verdict,
         heading: "This page could not be rendered",
         paragraphs: [
-          `The published file this page reads is not shaped the way the ` +
-          `viewer expects: ${pages.esc(detail)}.`,
-          "Rewrite the published files: <code>ledgerline publish</code>.",
+          `A published file has the wrong shape: ${pages.esc(detail)}.`,
+          "Run <code>ledgerline publish</code>.",
         ],
       }));
       return;

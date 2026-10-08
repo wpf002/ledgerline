@@ -24,6 +24,10 @@ from . import edgar, schedule, status
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 
+# launchd's status for a job it couldn't start: a working folder or log file
+# it couldn't open, before the program ran at all.
+EX_CONFIG = 78
+
 
 
 def missed_weekday_scans(last: datetime, now: datetime) -> int:
@@ -185,6 +189,20 @@ def _schedule() -> list[Check]:
         elif not s["loaded"]:
             out.append(Check(WARN, name, "installed but not loaded",
                              "ledgerline schedule install"))
+        elif s.get("last_exit") == EX_CONFIG:
+            # launchd gave up before the program ran. From 2026-10-03 to
+            # 2026-10-08 every scheduled scan ended this way because launchd
+            # couldn't open reports/scan.log, a file cron had created. The
+            # advice this check gave then, "scan --catch-up, then schedule
+            # install", ran the scan by hand and left the job broken.
+            log = os.path.relpath(s["log"]) if s.get("log") else "its log file"
+            out.append(Check(WARN, name,
+                             "launchd couldn't start it (exit 78): it couldn't "
+                             f"open the working folder or {log}",
+                             f"mv {log} {log}.old, then ledgerline schedule install"))
+        elif s.get("last_exit"):
+            out.append(Check(WARN, name, f"its last run exited with {s['last_exit']}",
+                             f"read {os.path.relpath(s['log']) if s.get('log') else 'its log'}"))
         else:
             out.append(Check(OK, name, "installed and loaded"))
     if schedule.old_cron_present():

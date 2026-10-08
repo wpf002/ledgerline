@@ -5,6 +5,7 @@ one makes.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
@@ -139,3 +140,28 @@ def test_every_non_ok_check_says_what_to_run(monkeypatch):
     for c in doctor.run():
         if c.state != doctor.OK:
             assert c.fix, f"{c.name} is {c.state} with no fix"
+
+
+def test_last_exit_reads_the_status_column():
+    listed = "PID\tStatus\tLabel\n-\t78\tcom.ledgerline.scan\n412\t0\tcom.ledgerline.service\n"
+    assert schedule.last_exit(listed, "com.ledgerline.scan") == 78
+    assert schedule.last_exit(listed, "com.ledgerline.service") == 0
+    assert schedule.last_exit(listed, "com.example.absent") is None
+
+
+def test_a_job_launchd_couldnt_start_is_named_with_the_real_fix(monkeypatch):
+    """From 2026-10-03 to 2026-10-08 every scheduled scan ended with launchd
+    status 78 because it couldn't open reports/scan.log, a file cron had
+    created. doctor said "installed and loaded" for the job and advised
+    `scan --catch-up` for the missed days, which ran a scan by hand and left
+    the job broken."""
+    monkeypatch.setattr(schedule, "supported", lambda: True)
+    monkeypatch.setattr(schedule, "old_cron_present", lambda: False)
+    monkeypatch.setattr(schedule, "status", lambda: [{
+        "label": schedule.SCAN_LABEL, "installed": True, "loaded": True,
+        "current": True, "last_exit": 78,
+        "log": os.path.join(schedule.REPO, "reports", "scan.log")}])
+    [check] = doctor._schedule()
+    assert check.state == doctor.WARN
+    assert "couldn't start it" in check.detail
+    assert "scan.log" in check.fix and "schedule install" in check.fix

@@ -159,9 +159,23 @@ def uninstall() -> dict:
     return {"removed": removed}
 
 
+def last_exit(listed: str, label: str) -> int | None:
+    """The exit status `launchctl list` reports for one job, or None when the
+    job isn't listed or hasn't exited. The columns are PID, status, label."""
+    for line in listed.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[2] == label:
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+    return None
+
+
 def status() -> list[dict]:
-    """Per job: is the plist installed, does launchd know about it, and does
-    the installed file still point at THIS repo and THIS interpreter."""
+    """Per job: is the plist installed, does launchd know about it, does the
+    installed file still point at THIS repo and THIS interpreter, and how did
+    its last start end."""
     out = []
     listed = _launchctl("list").stdout if supported() else ""
     for job in jobs():
@@ -175,7 +189,9 @@ def status() -> list[dict]:
             except (OSError, plistlib.InvalidFileException):
                 current = False
         out.append({"label": job.label, "installed": installed,
-                    "loaded": job.label in listed, "current": current})
+                    "loaded": job.label in listed, "current": current,
+                    "last_exit": last_exit(listed, job.label),
+                    "log": job.plist.get("StandardOutPath")})
     return out
 
 

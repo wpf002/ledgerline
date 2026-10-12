@@ -165,3 +165,19 @@ def test_a_job_launchd_couldnt_start_is_named_with_the_real_fix(monkeypatch):
     assert check.state == doctor.WARN
     assert "couldn't start it" in check.detail
     assert "scan.log" in check.fix and "schedule install" in check.fix
+
+
+def test_a_running_job_isnt_warned_about_its_previous_exit(monkeypatch):
+    """Restarting the read service ends the old process with SIGTERM, so
+    `launchctl list` shows -15 beside a job that's up. doctor reported that as
+    "its last run exited with -15" on a service answering every request."""
+    listed = "PID\tStatus\tLabel\n22580\t-15\tcom.ledgerline.service\n-\t0\tcom.ledgerline.scan\n"
+    assert schedule.running(listed, "com.ledgerline.service") is True
+    assert schedule.running(listed, "com.ledgerline.scan") is False
+    monkeypatch.setattr(schedule, "supported", lambda: True)
+    monkeypatch.setattr(schedule, "old_cron_present", lambda: False)
+    monkeypatch.setattr(schedule, "status", lambda: [{
+        "label": schedule.SERVICE_LABEL, "installed": True, "loaded": True,
+        "current": True, "last_exit": -15, "running": True, "log": None}])
+    [check] = doctor._schedule()
+    assert check.state == doctor.OK

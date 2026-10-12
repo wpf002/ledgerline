@@ -189,6 +189,11 @@ def _schedule() -> list[Check]:
         elif not s["loaded"]:
             out.append(Check(WARN, name, "installed but not loaded",
                              "ledgerline schedule install"))
+        elif s.get("running"):
+            # A job that's up now is fine whatever its previous exit was. The
+            # read service shows -15 after every restart, because restarting
+            # it is a SIGTERM.
+            out.append(Check(OK, name, "installed and running"))
         elif s.get("last_exit") == EX_CONFIG:
             # launchd gave up before the program ran. From 2026-10-03 to
             # 2026-10-08 every scheduled scan ended this way because launchd

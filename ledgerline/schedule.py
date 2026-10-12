@@ -172,6 +172,15 @@ def last_exit(listed: str, label: str) -> int | None:
     return None
 
 
+def running(listed: str, label: str) -> bool:
+    """Whether `launchctl list` shows a process id for the job right now."""
+    for line in listed.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[2] == label:
+            return parts[0].isdigit()
+    return False
+
+
 def status() -> list[dict]:
     """Per job: is the plist installed, does launchd know about it, does the
     installed file still point at THIS repo and THIS interpreter, and how did
@@ -191,6 +200,7 @@ def status() -> list[dict]:
         out.append({"label": job.label, "installed": installed,
                     "loaded": job.label in listed, "current": current,
                     "last_exit": last_exit(listed, job.label),
+                    "running": running(listed, job.label),
                     "log": job.plist.get("StandardOutPath")})
     return out
 

@@ -56,6 +56,11 @@ def med(a, sec, k):
     return float(np.median(v)) if v else nan
 f3 = json.load(open(os.path.join(SP, "tuning_f3.json")))
 XK = sorted({k for v in f3.values() for k in v if k != "dur"})
+f4 = json.load(open(os.path.join(SP, "tuning_f4.json")))
+# market-relative: each company's float change against the median change measured in the same year
+fy = defaultdict(list)
+for k, v in f4.items():
+    if "float_yoy" in v: fy[(k.split("|")[1], v["float_end"][:4])].append(v["float_yoy"])
 names = None; X = []; meta = []
 for t, rs in by.items():
     c = cases[t]; sec = (c.get("sector") or "00")[:2]
@@ -84,6 +89,12 @@ for t, rs in by.items():
             f["rel_" + k] = g(r, k) - f["sm_" + k]
         x3 = f3.get(f"{t}|{r['a']}", {})
         for k in XK: f["x_" + k] = x3.get(k, nan)
+        v4 = f4.get(f"{t}|{r['a']}", {})
+        f["p_float_yoy"] = v4.get("float_yoy", nan); f["p_float_2y"] = v4.get("float_2y", nan)
+        f["p_float_age"] = v4.get("float_age", nan)
+        peers = fy.get((r["a"], v4.get("float_end", "")[:4]), [])
+        f["p_float_rel"] = v4["float_yoy"] - float(np.median(peers)) if "float_yoy" in v4 and len(peers) >= 20 else nan
+        f["p_ps"] = math.log10(v4["float"] / (r["rev"] * 4)) if v4.get("float") and r.get("rev") and r["rev"] > 0 else nan
         pa = cutoffs[cutoffs.index(r["a"]) - 1] if cutoffs.index(r["a"]) else None
         f["sm_d1_rev"] = f["sm_revenue_yoy"] - med(pa, sec, "revenue_yoy") if pa else nan
         f["mm_d1_rev"] = f["mm_revenue_yoy"] - med(pa, "ALL", "revenue_yoy") if pa else nan
@@ -140,30 +151,18 @@ def trial(label, cols, y_train=None, seeds=(1, 2, 3), **kw):
 
 allc = list(names)
 noz = [c for c in allc if not c.startswith("z_") and c not in ("score", "nf", "nz2")]
-EXTRA = [c for c in noz if c.startswith("x_")]
-core = [c for c in noz if c not in EXTRA]
+PRICE = [c for c in noz if c.startswith("p_")]
+core = [c for c in noz if not c.startswith(("x_", "p_"))]
 y12 = np.where(kind == 1, np.where(mwin <= 12, 1, -1), 0)
-kw = dict(depth=3, iters=120, lr=0.04)
-SEEDS = (1, 2, 3, 4, 5)
+kw = dict(depth=3, iters=120, lr=0.04); SEEDS = (1, 2, 3, 4, 5)
 def caught_at(oof, fa_target):
     thr = np.quantile(oof[kind == 0], 1 - fa_target); f = oof >= thr
     pos = defaultdict(bool)
     for (t, a, k, bf, reg), fi in zip(meta, f):
         if k == 1: pos[t] = pos[t] or bool(fi)
     return sum(pos.values()) / len(pos)
-grid = (0.005, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08)
-res = np.array([[caught_at(oof_scores(core, sd, y12, **kw), g) for g in grid] for sd in SEEDS])
-print("new model, caught at each false-alarm rate (mean of 5 runs, min-max):")
-for g, col in zip(grid, res.T): print(f"  {g:5.1%}: {col.mean():5.1%}  ({col.min():.1%}-{col.max():.1%})")
-# the two-line rule on the same rows: cash from operations negative over the year, and more debt than cash
-ci = {n: names.index(n) for n in ("ocf_ttm_neg", "debt_a", "cash_a")}
-base = (X[:, ci["ocf_ttm_neg"]] == 1) & (X[:, ci["debt_a"]] > X[:, ci["cash_a"]])
-pos = defaultdict(bool)
-for (t, a, k, bf, reg), fi in zip(meta, base):
-    if k == 1: pos[t] = pos[t] or bool(fi)
-print(f"two-line rule: caught {sum(pos.values())/len(pos):.1%} at false alarms {base[kind == 0].mean():.2%}")
-h0 = (X[:, names.index("score")] >= 45) & (X[:, names.index("nf")] >= 2)
-pos = defaultdict(bool)
-for (t, a, k, bf, reg), fi in zip(meta, h0):
-    if k == 1: pos[t] = pos[t] or bool(fi)
-print(f"current detector: caught {sum(pos.values())/len(pos):.1%} at false alarms {h0[kind == 0].mean():.2%}")
+grid = (0.02, 0.04, 0.05, 0.06)
+for label, cols in (("core", core), ("core + reported market value", core + PRICE)):
+    res = np.array([[caught_at(oof_scores(cols, sd, y12, **kw), g) for g in grid] for sd in SEEDS])
+    print(f"{label:32}" + "  ".join(f"@{g:.0%}: {c.mean():5.1%} ({c.min():.0%}-{c.max():.0%})" for g, c in zip(grid, res.T)), flush=True)
+print("coverage of float_yoy:", round(float(np.mean(~np.isnan(X[:, names.index('p_float_yoy')]))), 2))

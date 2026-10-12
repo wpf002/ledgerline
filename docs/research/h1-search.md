@@ -45,6 +45,13 @@ Predicting a break within 12 months worked better than 24.
   charges, credit-line draws, payables, backlog, short-term debt, read
   straight from the tagged facts: 55.2% at 4%, inside the noise of 56.7%.
 - A deeper or bagged model.
+- The market value each company states in its annual report (public float):
+  its year-over-year change, its change against other companies, and its
+  ratio to sales. 55.9% at 4%. It's one reading a year, published about eight
+  months after it's measured.
+
+Daily stock prices are untested. Stooq, the source tried, serves a bot check
+to scripted downloads, so the file has to be fetched by hand.
 
 ## Where it misses
 

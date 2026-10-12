@@ -239,17 +239,20 @@ export function message({ title, current, validation, heading, paragraphs }) {
 
 // ------------------------------------------------------------------ overview
 
+// Rows per table on the front page.
+const OVERVIEW_ROWS = 10;
+
 // The two numbers that say how far to trust a flag.
 function trackRecord(validation) {
   const m = (validation || {}).measured;
   if (!m) return "";
-  return section({ title: "Track Record",
+  return section({ title: "Track Record", sub: "From a one-time backtest.",
+    aside: '<a class="more-link" href="/verdict">How It Was Tested</a>',
     body: '<div class="panel panel-body facts-big">' +
       `<div><b>${pct(m.positive_hit_rate)}</b><p>of companies that later ` +
       `deteriorated were flagged in time. The goal was ${pct(m.positive_hit_rate_floor)}.</p></div>` +
       `<div><b>${pct(m.fpr_per_filer)}</b><p>of healthy companies were ` +
-      "flagged at least once.</p></div>" +
-      '<a class="more-link" href="/verdict">How It Was Tested</a></div>' });
+      "flagged at least once.</p></div></div>" });
 }
 
 // Whether the page is showing current readings or backtest replays. A replay
@@ -288,22 +291,26 @@ export function overview(data) {
       sub: plural(scan.universe_hits, "new filing", "new filings") },
   ]);
 
-  const more = (counts.flagged || 0) > flagged.length
-    ? `<p class="note"><a href="/watchlist?status=flagged&sort=score">All ${num(counts.flagged)} flagged companies</a></p>` : "";
-  const flaggedBody = flagged.length === 0
+  // The front page shows the ten highest scores; the watchlist has them all.
+  const top = flagged.slice(0, OVERVIEW_ROWS);
+  const more = (counts.flagged || 0) > top.length
+    ? `<a class="more-link" href="/watchlist?status=flagged&sort=score">All ${num(counts.flagged)} Flagged</a>` : "";
+  const flaggedBody = top.length === 0
     ? '<div class="panel"><p class="panel-empty">No company is flagged right now.</p></div>'
     : `<div class="panel"><div class="table-wrap"><table>
-      <thead><tr><th>Company</th><th>Score</th><th>Out of Line</th></tr></thead>
-      <tbody>${flagged.map((f) => `<tr>
+      <thead><tr><th>Company</th><th>Score</th><th>Out of Line</th><th>Quarter Ended</th></tr></thead>
+      <tbody>${top.map((f) => `<tr>
         ${coCell(f.ticker, f.name)}
         <td><div class="assess">${scoreCell(f.score, true)}${f.source === "replay"
           ? pill("Replay", "none") : ""}</div></td>
-        <td>${tags(f.flags, 3)}</td>
-      </tr>`).join("")}</tbody></table></div></div>${more}`;
+        <td>${tags(f.flags, 6)}</td>
+        <td class="num">${date(f.period)}</td>
+      </tr>`).join("")}</tbody></table></div></div>`;
 
-  const filingsBody = filings.length === 0
+  const reports = filings.slice(0, OVERVIEW_ROWS);
+  const filingsBody = reports.length === 0
     ? '<div class="panel"><p class="panel-empty">No new reports yet.</p></div>'
-    : `<div class="panel"><ul class="rows">${filings.map((f) =>
+    : `<div class="panel"><ul class="rows two">${reports.map((f) =>
       `<li><a class="row-main" href="/company/${encodeURIComponent(f.ticker || "")}">` +
       `<b>${esc(f.ticker || "—")}</b><span>${esc(f.name || "")}</span></a>` +
       `<a class="row-meta" href="${esc(secUrl(f.cik, f.accession))}" rel="noreferrer" ` +
@@ -313,14 +320,12 @@ export function overview(data) {
   const body = head("Overview",
     `${plural(data.n_companies, "company", "companies")} watched. ${freshness(assessed)}`) +
     strip +
-    '<div class="section cols">' +
     section({ title: "Flagged Companies",
       sub: "Two or more measures broke from the company's own history. Highest score first.",
-      body: flaggedBody }) +
-    "<div>" +
+      aside: more, body: flaggedBody }) +
     section({ title: "Latest Reports", sub: "Quarterly and annual filings.",
       body: filingsBody }) +
-    trackRecord(data.validation) + "</div></div>";
+    trackRecord(data.validation);
   return layout({ title: "Overview", current: "/", validation: data.validation, body });
 }
 
@@ -922,8 +927,9 @@ export function verdict(data) {
     </dl></div></details></div>`;
 
   const body = head("Accuracy", "How far to trust a flag.") + strip +
+    '<div class="section cols half">' +
     section({ title: "What This Means", body: meaning }) +
-    section({ title: "How It Was Tested", body: steps }) +
+    section({ title: "How It Was Tested", body: steps }) + "</div>" +
     section({ title: "Results", sub: "It had to meet all six goals.",
       body: rows }) +
     `<div class="section">${technical}</div>`;

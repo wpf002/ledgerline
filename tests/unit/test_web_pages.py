@@ -158,11 +158,11 @@ def banner_of(body: str) -> str:
 
 
 def carries_verdict(body: str) -> bool:
-    """The banner says the test failed, with the frozen catch rate and the
-    bar it missed, and carries the status for programs that check for it."""
+    """The banner gives the frozen catch rate and the goal it missed, and
+    carries the status for programs that check for it."""
     m = contract.validation_block()["measured"]
     b = banner_of(body)
-    return ("Failed its own test." in b
+    return ("Accuracy Note" in b
             and f"{m['positive_hit_rate'] * 100:.1f}%" in b
             and f"{m['positive_hit_rate_floor'] * 100:.0f}%" in b
             and 'data-status="UNVALIDATED-KILL"' in b)
@@ -175,7 +175,6 @@ def carries_verdict(body: str) -> bool:
     # The pages that render something OTHER than a table of results. Each is a
     # separate branch, and the verdict is not a property of the happy path: a
     # page that has no companies to show is still a page about this detector.
-    ("/company", 200),                       # the lookup form, nothing chosen
     ("/company/ZZNOPE", 404),                # a ticker nobody watches
     ("/company/one/two", 404),               # not a company address at all
     ("/watchlist?group=semi", 200),          # a group name nobody created
@@ -284,7 +283,7 @@ def test_a_company_nothing_was_assessed_for_shows_words_not_a_number(site):
     opposite. QUIET has no saved assessment, so its row says so in words and
     draws no score."""
     body = site.body("/watchlist?q=QUIET")
-    assert "nothing assessed yet" in body
+    assert "Not Assessed" in body
     assert 'class="score' not in body
 
 
@@ -317,7 +316,7 @@ def test_every_number_on_a_company_page_names_the_filing_it_came_from(site):
     # Plain names in the trail, not the identifiers it is keyed by. The
     # measures table above it carries the technical name as a hover title.
     trail = body.split('id="sources"')[1]
-    assert "cash-vs-sales" in trail
+    assert "Cash vs Sales" in trail
     assert "cash_conversion_gap" not in trail and "operating_cash_flow" not in trail
 
 
@@ -399,27 +398,39 @@ def render_page(fn: str, *args) -> str:
     return out.stdout
 
 
-def _digest(run: dict) -> dict:
-    return {"run": run, "validation": contract.validation_block(),
-            "expected_false_positives_if_nothing_wrong": 1.2, "fires": []}
+def _overview(live: int, replay: int, newest: str | None) -> dict:
+    row = {"ticker": "TEST", "name": "T Inc", "score": 61.2, "period": "2025-09-30",
+           "as_of": newest, "flags": ["Cash vs Sales", "Inventory"],
+           "source": "score" if live else "replay"}
+    return {"n_companies": 6, "validation": contract.validation_block(),
+            "counts": {"flagged": 1, "clear": 5, "unassessable": 0, "pending": 0},
+            "assessed": {"live": live, "replay": replay, "newest": newest},
+            "flagged": [row] if live or replay else [], "filings": [],
+            "last_scan": None}
 
 
 def test_the_overview_says_a_replay_is_a_replay():
-    """Every assessment on record today is a replay over the practice half --
-    the split the thresholds were fitted on -- and the front page rendered
-    those six companies under "Latest run" with `source` and `split` arriving
-    in the same payload and being dropped. The banner caveats the method; this
-    caveats these particular numbers."""
-    body = render_page("overview", _digest(
-        {"run_date": "2025-11-15", "source": "replay", "split": "tuning",
-         "scoreable": 453, "unscoreable": 18, "gated_in": 6}))
-    assert "A replay on the practice half" in body
-    assert "the companies used to tune the thresholds" in body
-    assert "Not a live result" in body
-    # A live run is not described as a replay.
-    live = render_page("overview", _digest(
-        {"run_date": "2026-08-30", "source": "scan", "scoreable": 1}))
-    assert "A live run on Aug 30, 2026" in live and "replay" not in live.lower()
+    """Every assessment on record was once a replay over the practice half,
+    and the front page rendered those companies as the latest run with nothing
+    saying so. The page now says whether it's showing current readings or
+    replays, and what to run to get current ones."""
+    body = render_page("overview", _overview(0, 6, "2025-11-15"))
+    assert "backtest replays through Nov 15, 2025" in body
+    assert "not current" in body
+    assert "ledgerline assess" in body
+    # A current reading is not described as a replay.
+    live = render_page("overview", _overview(6, 0, "2026-08-30"))
+    assert "Assessed Aug 30, 2026" in live and "replay" not in live.lower()
+
+
+def test_an_overview_with_nothing_assessed_says_what_to_run():
+    """A fresh install has watched, fetched and scanned and has no saved
+    assessments. That's a first-run state with one command to fix it, and the
+    accuracy note still comes first."""
+    body = render_page("overview", _overview(0, 0, None))
+    assert "Nothing Assessed Yet" in body
+    assert "ledgerline assess" in body
+    assert body.index("UNVALIDATED-KILL") < body.index("Nothing Assessed Yet")
 
 
 def test_a_replayed_assessment_says_so_in_the_watchlist_cell():
@@ -436,7 +447,7 @@ def test_a_replayed_assessment_says_so_in_the_watchlist_cell():
                                      "n_companies": 1, "n_assessable": 1,
                                      "validation": contract.validation_block()},
                        {"q": "", "group": "", "assessable": "", "page": 1})
-    assert ">replay</span>" in body and "Replayed on the practice half" in body
+    assert "Backtest replay" in body
 
 
 def test_the_published_watchlist_row_carries_its_own_provenance(site):
@@ -496,7 +507,7 @@ def test_a_wrong_shaped_published_file_renders_a_page_not_a_dead_socket(site):
 
     status, _, body = site.request("/activity")
     assert status == 503
-    assert "could not be rendered" in body
+    assert "Could Not Be Rendered" in body
     assert "ledgerline publish" in body
     assert carries_verdict(body), "the verdict travels with the failure page"
     assert not crashed(site), "the service exited rendering a wrong-shaped file"
@@ -533,7 +544,8 @@ def test_a_feed_record_without_its_measured_numbers_is_refused_not_fatal(site):
     status, _, body = site.request("/digest")
     assert status == 503
     assert "measured" in json.loads(body)["error"]
-    assert site.request("/")[0] == 503
+    # The overview reads its own published file, so it still answers.
+    assert site.request("/")[0] == 200
     assert not crashed(site), "the service exited on a half-complete record"
 
 
@@ -682,20 +694,6 @@ def test_the_watchlist_header_tells_unchecked_apart_from_checked_and_stuck():
     assert "None of them have been checked yet" not in fine
 
 
-def test_nothing_assessed_yet_is_a_first_run_state_not_an_outage(site):
-    """The cold-clone test found it: a fresh install that has watched, fetched
-    and scanned has no saved assessments, because scans don't assess. The
-    overview answered 503, which reads as a broken service, and advised
-    `scan --score`, which only assesses companies that filed that day."""
-    with open(os.path.join(site.feed_dir, "signals.jsonl"), "w"):
-        pass
-    status, _, body = site.request("/")
-    assert status == 200
-    assert "Nothing assessed yet" in body
-    assert "score FMC --emit" in body
-    assert body.index("UNVALIDATED-KILL") < body.index("Nothing assessed yet")
-
-
 # ------------------------------------------------ the page the banner links to
 
 
@@ -715,7 +713,7 @@ def test_the_banner_links_to_a_page_a_person_can_read(site):
     for check in published["checks"]:
         assert check["name"] in page
         assert check["required"] in page
-    assert "28.7%" in page and "at least 60%" in page
+    assert "28.7%" in page and "At least 60%" in page
     assert "ledgerline reproduce" in page
 
 
@@ -772,3 +770,54 @@ def test_the_score_history_chart_draws_what_was_saved():
     assert "Flag line, 45" in chart
     assert "<script" not in body.lower()
     assert "http://" not in body
+
+
+# ------------------------------------------------------- one list of companies
+
+
+def test_the_bare_company_address_goes_to_the_watchlist(site):
+    """/company used to be a second page listing only the flagged companies,
+    which read as "there are only six companies". Every watched company is on
+    the watchlist, so the bare address goes there."""
+    code, headers, _ = site.request("/company")
+    assert code == 302 and headers["Location"] == "/watchlist"
+
+
+def _rows(n: int) -> list[dict]:
+    return [{"ticker": f"T{i:03d}", "name": f"Company {i}", "groups": [],
+             "assessable": True, "status": "flagged" if i < 3 else "clear",
+             "latest": {"as_of": "2026-10-11", "period": "2026-06-30",
+                        "score": float(100 - i), "flagged": i < 3,
+                        "scoreable": True, "reason": None, "flags": [],
+                        "source": "score", "split": None}}
+            for i in range(n)]
+
+
+def _watchlist(n: int, **f) -> str:
+    rows = _rows(n)
+    data = {"companies": rows, "groups": [], "n_companies": n, "n_assessable": n,
+            "n_checked": n, "n_flagged": 3,
+            "counts": {"flagged": 3, "clear": n - 3, "unassessable": 0, "pending": 0},
+            "validation": contract.validation_block()}
+    return render_page("watchlist", data, {"q": "", "group": "", "status": "",
+                                           "assessable": "", "sort": "", "page": "", **f})
+
+
+def test_the_watchlist_pages_fifty_at_a_time():
+    """1,498 rows on one page is a wall. Fifty to a page, with the range and
+    the page links above and below the table."""
+    first = _watchlist(120)
+    assert first.count('class="co"') == 50
+    assert "1–50 of 120" in first
+    assert 'href="/watchlist?page=2"' in first and 'href="/watchlist?page=3"' in first
+    last = _watchlist(120, page="3")
+    assert last.count('class="co"') == 20
+    assert "101–120 of 120" in last
+
+
+def test_the_status_tabs_filter_and_count_from_what_was_published():
+    body = _watchlist(120, status="flagged")
+    assert body.count('class="co"') == 3
+    assert "Flagged <span>3</span>" in body and "Not Flagged <span>117</span>" in body
+    by_score = _watchlist(120, sort="score")
+    assert by_score.index("T000") < by_score.index("T001") < by_score.index("T002")

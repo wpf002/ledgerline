@@ -237,7 +237,7 @@ def test_scan_prints_the_banner_before_the_first_result_line(
     monkeypatch.setattr(signals_v3, "evaluate",
                         lambda *a, **k: status.stamp(res))
     cli.scan(days_back=1, as_of=None, score=True, refresh=False, group=None,
-             narrate=False)
+             narrate=False, catch_up=False, publish_after=False)
     out = capsys.readouterr().out
     assert out.index("NOT VALIDATED") < out.index("FLAGGED")
     status.assert_stamped(res)
@@ -279,3 +279,13 @@ def test_explain_prints_the_banner_before_the_score(capsys, monkeypatch):
     assert "NOT VALIDATED" in out
     assert out.index("NOT VALIDATED") < out.index("FLAGGED")
     assert "A flag is not evidence" in out
+
+
+def test_no_test_can_write_the_published_pages():
+    """tests/conftest.py points the default publish location at a temporary
+    directory. This fails if that guard is ever removed."""
+    from ledgerline.api import contract, views
+    live = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "reports", "feed")
+    assert not contract.FEED_PATH.startswith(live)
+    assert live != views.FEED_DIR

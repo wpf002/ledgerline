@@ -260,7 +260,7 @@ function sendHtml(res, status, html) {
 function notPublished(res, { title, current, rel }) {
   sendHtml(res, 503, pages.message({
     title, current, validation: anyValidation(),
-    heading: "Not published yet",
+    heading: "Not Published Yet",
     paragraphs: [
       `Run <code>ledgerline publish</code> to write <code>${pages.esc(rel)}</code>.`,
     ],
@@ -268,49 +268,21 @@ function notPublished(res, { title, current, rel }) {
 }
 
 function serveOverview(res) {
-  let records;
-  try {
-    records = loadFeed();
-  } catch (err) {
+  const got = readView("overview.json");
+  if (!got.ok) {
+    if (got.missing) {
+      notPublished(res, { title: "Overview", current: "/", rel: "overview.json" });
+      return;
+    }
     sendHtml(res, 503, pages.message({
       title: "Overview", current: "/", validation: anyValidation(),
-      heading: "Can't read the assessment feed",
-      paragraphs: [pages.esc(String(err.message ?? err)) + ".",
+      heading: "Can't Read the Overview",
+      paragraphs: [pages.esc(got.error) + ".",
         "Run <code>ledgerline publish</code>."],
     }));
     return;
   }
-  if (records.length === 0) {
-    // 200, not 503. Nothing assessed yet is the normal state of a fresh
-    // install, because scans keep figures current without assessing anything.
-    // The cold-clone test caught this: a 503 here read as a broken service.
-    // The old advice, `scan --score`, only assesses companies that filed that
-    // day, so on a new install it usually left the page empty anyway.
-    sendHtml(res, 200, pages.message({
-      title: "Overview", current: "/", validation: anyValidation(),
-      heading: "Nothing assessed yet",
-      paragraphs: [
-        "Scans keep figures current but don't assess anything.",
-        "To assess one company: <code>ledgerline score FMC --emit</code>, then " +
-        "<code>ledgerline publish</code>.",
-      ],
-    }));
-    return;
-  }
-  // The watchlist's counts and the latest run, when they've been published,
-  // so the front page can say how much is being watched and when it last
-  // read the SEC. Both are already-published numbers; neither is required.
-  const extra = {};
-  const wl = readView("watchlist.json");
-  if (wl.ok) {
-    const { n_companies, n_assessable, n_checked, n_flagged, generated } = wl.data;
-    extra.watchlist = { n_companies, n_assessable, n_checked, n_flagged, generated };
-  }
-  const log = readView("runs.json");
-  if (log.ok && Array.isArray(log.data.runs) && log.data.runs[0]) {
-    extra.lastRun = log.data.runs[0];
-  }
-  sendHtml(res, 200, pages.overview(digestOf(records), extra));
+  sendHtml(res, 200, pages.overview(got.data));
 }
 
 function serveWatchlist(res, url) {
@@ -323,7 +295,7 @@ function serveWatchlist(res, url) {
     }
     sendHtml(res, 503, pages.message({
       title: "Watchlist", current: "/watchlist", validation: anyValidation(),
-      heading: "Can't read the watchlist",
+      heading: "Can't Read the Watchlist",
       paragraphs: [pages.esc(got.error) + ".",
         "Run <code>ledgerline publish</code>."],
     }));
@@ -333,30 +305,23 @@ function serveWatchlist(res, url) {
   sendHtml(res, 200, pages.watchlist(got.data, {
     q: q.get("q") ?? "",
     group: q.get("group") ?? "",
+    status: ["flagged", "clear", "unassessable", "pending"].includes(q.get("status"))
+      ? q.get("status") : "",
     assessable: ["yes", "no", "unknown"].includes(q.get("assessable"))
       ? q.get("assessable") : "",
-    page: q.get("page") ?? "1",
+    sort: q.get("sort") === "score" ? "score" : "",
+    page: q.get("page") ?? "",
   }));
 }
 
-// The Company tab with no ticker, or with one nobody is watching. Neither is
-// an error page: one is a search box, the other says which of the two things
-// went wrong -- not watched at all, or watched and not yet published -- and
-// which command fixes that one.
+// A company address this service can't serve: not a ticker, not watched, or
+// not published. One page says which, and which command fixes it.
 function serveCompanyIndex(res, note) {
-  const got = readView("watchlist.json");
-  if (!got.ok) {
-    sendHtml(res, 503, pages.message({
-      title: "Company", current: "/company", validation: anyValidation(),
-      heading: note ? "No page for that company" : "Open a company",
-      paragraphs: [
-        note ?? "Try <code>/company/FMC</code>.",
-        "Pages are written by <code>ledgerline publish</code>.",
-      ],
-    }));
-    return;
-  }
-  sendHtml(res, note ? 404 : 200, pages.companyIndex(got.data, note));
+  sendHtml(res, 404, pages.message({
+    title: "Company Not Found", current: "/watchlist", validation: anyValidation(),
+    heading: "Company Not Found",
+    paragraphs: [note, '<a href="/watchlist">Browse the watchlist</a>'],
+  }));
 }
 
 // A path segment is not necessarily text. `new URL()` leaves an invalid
@@ -389,7 +354,7 @@ function serveCompany(res, raw) {
   if (!got.missing) {
     sendHtml(res, 503, pages.message({
       title: ticker, current: "/company", validation: anyValidation(),
-      heading: `Can't read ${pages.esc(ticker)}'s page`,
+      heading: `Can't Read ${pages.esc(ticker)}'s Page`,
       paragraphs: [pages.esc(got.error) + ".",
         "Run <code>ledgerline publish</code>."],
     }));
@@ -425,7 +390,7 @@ function serveActivity(res) {
     }
     sendHtml(res, 503, pages.message({
       title: "Activity", current: "/activity", validation: anyValidation(),
-      heading: "Can't read the run log",
+      heading: "Can't Read the Run Log",
       paragraphs: [pages.esc(got.error) + ".",
         "Run <code>ledgerline publish</code>."],
     }));
@@ -439,13 +404,13 @@ function serveVerdict(res) {
   const got = readView("verdict.json");
   if (!got.ok) {
     if (got.missing) {
-      notPublished(res, { title: "The test", current: "/verdict",
+      notPublished(res, { title: "Accuracy", current: "/verdict",
         rel: "verdict.json" });
       return;
     }
     sendHtml(res, 503, pages.message({
-      title: "The test", current: "/verdict", validation: anyValidation(),
-      heading: "Can't read the test record",
+      title: "Accuracy", current: "/verdict", validation: anyValidation(),
+      heading: "Can't Read the Test Record",
       paragraphs: [pages.esc(got.error) + ".",
         "Run <code>ledgerline publish</code>."],
     }));
@@ -527,7 +492,9 @@ function handle(req, res) {
         res.end();
         return;
       }
-      serveCompanyIndex(res, null);
+      // Every watched company is on the watchlist; there's no second list.
+      res.writeHead(302, { Location: "/watchlist" });
+      res.end();
     } else if (parts[0] === "company" && parts.length === 2) {
       serveCompany(res, parts[1]);
     } else {
@@ -650,7 +617,7 @@ function renderFailure(req, res, err) {
       } catch { /* the evidence is what just failed; the page says so below */ }
       sendHtml(res, 503, pages.message({
         title: "Not rendered", current: `/${first}`, validation: verdict,
-        heading: "This page could not be rendered",
+        heading: "This Page Could Not Be Rendered",
         paragraphs: [
           `A published file has the wrong shape: ${pages.esc(detail)}.`,
           "Run <code>ledgerline publish</code>.",

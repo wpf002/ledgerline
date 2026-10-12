@@ -667,21 +667,56 @@ def test_the_verdict_line_is_one_cell_and_not_four(isolated_db, tmp_path):
 
 
 def test_the_test_page_reads_the_frozen_record_check_by_check():
-    """verdict.json is what /verdict renders: the six pre-registered checks in
-    the write-up's order, each with its result and its bar in words, and the
-    failed count taken from the frozen record rather than restated."""
+    """verdict.json is what /verdict renders: the six pre-registered checks,
+    headline result first, each with its result and its goal in words, and
+    the failed count taken from the frozen record rather than restated."""
     v = views.verdict()
     record = status.load()
     assert [c["key"] for c in v["checks"]] == [
-        "false_positive_rate_per_quarter", "median_lead_months",
-        "positive_hit_rate", "regime_coverage", "sample_size",
-        "beats_naive_baseline"]
+        "positive_hit_rate", "false_positive_rate_per_quarter",
+        "beats_naive_baseline", "median_lead_months", "regime_coverage",
+        "sample_size"]
     assert v["n_failed"] == sum(1 for c in record["checks"].values()
                                 if not c["pass"])
     hit = next(c for c in v["checks"] if c["key"] == "positive_hit_rate")
     assert (hit["result"], hit["required"], hit["passed"]) == \
-        ("28.7%", "at least 60%", False)
+        ("28.7%", "At least 60%", False)
     assert v["validation"] == contract.validation_block()
     assert v["registry"]["error"] is None
     assert v["registry"]["hypotheses"][0]["id"] == "h0"
     assert all(r["caught"] for r in v["regimes"])
+
+
+def test_a_company_name_reads_the_way_a_person_writes_it():
+    """The SEC stores many names in capitals. A column of them reads as
+    shouting, so an all-capitals name is recased and anything else is left."""
+    assert views.display_name("AGILENT TECHNOLOGIES, INC.", "A") == "Agilent Technologies, Inc."
+    assert views.display_name("FMC CORP", "FMC") == "FMC Corp"
+    assert views.display_name("BANK OF AMERICA CORP", "BAC") == "Bank of America Corp"
+    assert views.display_name("AT&T INC.", "T") == "AT&T Inc."
+    assert views.display_name("Alcoa Corp", "AA") == "Alcoa Corp"
+
+
+def test_assess_saves_one_run_covering_every_watched_company(isolated_db, monkeypatch):
+    """A scan only re-assesses the companies that filed that day, so every
+    saved assessment was a backtest replay and 1,027 of 1,498 rows read "not
+    assessed". `assess` evaluates every watched company and saves one run."""
+    from ledgerline import ingest
+    watch([("0000000001", "TEST", "T INC", "3674"),
+           ("0000000002", "QUIET", "Q INC", "3674")])
+    verdicts = {"0000000001": fired_verdict(), "0000000002": unscoreable_verdict()}
+
+    def fake(ticker, cik, as_of=None, **_):
+        return {**verdicts[cik], "ticker": ticker, "cik": cik}
+    monkeypatch.setattr(ingest.signals_v3, "evaluate", fake)
+    out = ingest.assess()
+    assert out["counters"]["filers_done"] == 2 and out["counters"]["scored"] == 1
+
+    wl = views.watchlist()
+    assert wl["counts"] == {"flagged": 1, "clear": 0, "unassessable": 1, "pending": 0}
+    assert {c["ticker"]: c["status"] for c in wl["companies"]} == \
+        {"TEST": "flagged", "QUIET": "unassessable"}
+    front = views.overview(wl)
+    assert [f["ticker"] for f in front["flagged"]] == ["TEST"]
+    assert front["assessed"]["live"] == 2 and front["assessed"]["replay"] == 0
+    assert front["flagged"][0]["name"] == "T Inc"

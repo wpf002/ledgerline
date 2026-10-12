@@ -80,15 +80,19 @@ ledgerline publish        # write the files the viewer reads
 node service/server.mjs   # then open http://localhost:8787
 ```
 
-Five pages, all rendered on the server, none of them needing JavaScript:
+Four pages, all rendered on the server, none of them needing JavaScript:
 
 | Page | What is on it |
 | ---- | ------------- |
-| `/` | the latest run: how many were assessed, how many could not be, what fired |
-| `/watchlist` | every watched company; filter by group or by whether it can be assessed, search by ticker or name |
-| `/company/TICKER` | one company: the same plain reading `ledgerline explain` prints, the thirteen measures, the filings every number came from, anything later revised, the provenance trail |
-| `/activity` | the run log: when, what it cost, what it read, what it could not assess |
-| `/verdict` | the detector's own test: the six pre-registered checks, what each required, how to re-run it, and what can be tested next |
+| `/` | who is flagged now, the latest quarterly and annual reports, and the detector's track record |
+| `/watchlist` | every watched company, fifty to a page; filter by status or group, search, sort by score |
+| `/company/TICKER` | one company: its score, the thirteen measures, the filings every number came from, anything later revised |
+| `/activity` | every check for new filings and what it found |
+| `/verdict` | how accurate the flags were in the backtest, and how it was run |
+
+`ledgerline assess` assesses every watched company from what's already
+downloaded (about a minute, no requests). The nightly job then re-assesses
+each company as it files and rewrites the pages.
 
 Nothing is installed and nothing is downloaded — it reads the files `publish`
 wrote and stays on loopback. Every page leads with the result of the failed

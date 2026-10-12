@@ -2,43 +2,27 @@
 // ./svg.mjs, the icons and charts. These are pure functions from published
 // JSON to markup, which is what lets a test hold one against the other.
 //
-// The verdict banner is rendered here, on the server, as the first thing in
+// The accuracy note is rendered here, on the server, as the first thing in
 // the body of every page. The page this replaced painted it from JavaScript
 // after a fetch, so with scripting off it never appeared while the scores
 // did. tests/unit/test_web_pages.py pins the ordering.
 //
-// The pages compute nothing. Plain names, reasons, the wording of the test's
-// checks: all of it arrives written from ledgerline/api/views.py. What's here
-// is layout, escaping, formatting, and scaling published numbers to pixels.
+// The pages compute nothing. Names, reasons, row status, counts, the wording
+// of the test's checks: all of it arrives written from
+// ledgerline/api/views.py. What's here is layout, escaping, formatting,
+// filtering and paging rows, and scaling published numbers to pixels.
 
-import {
-  filingTimeline, icon, logo, monthDay, runHistory, scoreHistory,
-} from "./svg.mjs";
+import { filingTimeline, icon, logo, runHistory, scoreHistory } from "./svg.mjs";
 
 const NAV = [
   ["/", "Overview", "overview"],
   ["/watchlist", "Watchlist", "list"],
-  ["/company", "Companies", "building"],
   ["/activity", "Activity", "pulse"],
-  ["/verdict", "The test", "flask"],
+  ["/verdict", "Accuracy", "target"],
 ];
 
-// The concern score at which a company with two measures out of line is
-// flagged. Every chart and note here uses the same line.
+// The score at which a company with two measures out of line is flagged.
 const FLAG_LINE = 45;
-
-// Plain names for the measure codes /digest carries. Only the overview needs
-// them; every other page reads a file where the Python wrote the plain name.
-// Mirrors ledgerline/render.py PLAIN.
-const PLAIN = {
-  CASH_CONVERSION_GAP: "cash-vs-sales", ACCRUAL_RATIO: "paper-vs-cash profit",
-  RECEIVABLES_VS_REVENUE: "unpaid-bills", INVENTORY_VS_REVENUE: "stockpile",
-  DSO: "collection-days", DIO: "shelf-days",
-  DEFERRED_VS_REVENUE_GAP: "prepaid-orders", REVENUE_ACCEL: "growth-brake",
-  GROSS_MARGIN: "product-margin", OP_MARGIN: "operating-margin",
-  OCF_TO_REVENUE: "cash-per-sale", NET_DEBT_TO_TTM_OCF: "debt-vs-cash",
-  DILUTION_YOY: "share-creep",
-};
 
 // A published file that has a key holding the wrong type renders as empty
 // rather than throwing; `x || []` let a string through to `.map`.
@@ -80,17 +64,30 @@ function pct(v, digits = 1) {
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
   "Oct", "Nov", "Dec"];
 
-// "2025-11-15" reads as "Nov 15, 2025".
+// "2025-11-15" reads as "Nov 15, 2025". A timestamp is shown on the day it
+// fell on this machine's clock: a 9:30 PM scan is stored as the next day UTC.
 function date(iso) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ""));
+  const s = String(iso ?? "");
+  if (s.includes("T")) {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+    }
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
   if (!m) return iso ? esc(iso) : "—";
   return `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}`;
 }
 
-function bytes(n) {
-  if (!n) return "0 KB";
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+function shortDate(iso) {
+  return date(iso).replace(/, \d{4}$/, "");
+}
+
+function clock(iso) {
+  const d = new Date(String(iso ?? ""));
+  if (Number.isNaN(d.getTime())) return "";
+  const h = d.getHours();
+  return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
 }
 
 function plural(n, one, many) {
@@ -133,6 +130,19 @@ function pill(text, tone = "") {
   return `<span class="pill${tone ? ` ${tone}` : ""}">${text}</span>`;
 }
 
+// Measure names as tags. A table row shows the first few and counts the
+// rest, so a company with eight out of line doesn't make a row eight lines
+// tall; the full list is on hover and on the company's page.
+function tags(names, max = 0) {
+  const items = list(names);
+  if (!items.length) return '<span class="muted">—</span>';
+  const shown = max && items.length > max ? items.slice(0, max) : items;
+  const rest = items.slice(shown.length);
+  return `<div class="chips">${shown.map((x) => pill(esc(x))).join("")}` +
+    (rest.length ? `<span class="pill none" title="${esc(rest.join(", "))}">+${rest.length}</span>` : "") +
+    "</div>";
+}
+
 function legend(items) {
   return '<div class="legend">' + items.map(([cls, label]) =>
     `<span><i class="${cls}"></i>${label}</span>`).join("") + "</div>";
@@ -141,9 +151,14 @@ function legend(items) {
 function scoreCell(score, flagged) {
   return '<span class="score">' +
     `<span class="score-num${flagged ? " danger" : ""}">${esc(score)}</span>` +
-    `<span class="sbar" title="${esc(score)} of 100; the line is ${FLAG_LINE}">` +
+    `<span class="sbar" title="${esc(score)} of 100. A flag starts at ${FLAG_LINE}.">` +
     `<span class="sbar-fill${flagged ? " danger" : ""}" ` +
     `style="width:${clamp100(score).toFixed(1)}%"></span></span></span>`;
+}
+
+function coCell(ticker, name) {
+  return `<td class="co"><a href="/company/${encodeURIComponent(ticker || "")}">` +
+    `${esc(ticker || "—")}</a><span>${esc(name || "")}</span></td>`;
 }
 
 // One tick per measure: "danger" out of line, "on" measured, "" no data.
@@ -153,36 +168,28 @@ function ticks(states, label) {
       `<i${s ? ` class="${s}"` : ""}></i>`).join("")}</span>`;
 }
 
-function meter(value, max, { mark = null, danger = false } = {}) {
-  const at = (v) => Math.max(0, Math.min(100, (Number(v) / Number(max)) * 100));
-  return `<div class="meter${danger ? " danger" : ""}">` +
-    `<span class="meter-fill" style="width:${at(value).toFixed(1)}%"></span>` +
-    (mark === null || mark === undefined ? ""
-      : `<span class="meter-mark" style="left:${at(mark).toFixed(1)}%"></span>`) +
-    "</div>";
-}
-
 // ------------------------------------------------------------- the banner
 
-// The verdict, first, on every page. Its numbers come from the validation
-// block, which ledgerline/api/contract.py builds from the frozen record; the
-// full sentence is on /verdict. The status travels as an attribute so
-// programs that check for it still can.
+// The accuracy note, first, on every page. Its numbers come from the
+// validation block, which ledgerline/api/contract.py builds from the frozen
+// test record. It's about how reliable a flag is, so it's worded as that and
+// not as the app having failed. The status travels as an attribute for
+// programs that check it.
 export function banner(validation) {
   if (!validation || !validation.statement) {
-    return '<div class="banner" role="note"><b>Verdict unavailable.</b>' +
-      "<span>The record of the detector's test is missing, so nothing here " +
-      "should be read as working. Restore <code>ledgerline/data/phase0.json" +
-      "</code> and run <code>ledgerline publish</code>.</span></div>";
+    return '<div class="banner" role="note"><b>Accuracy Unknown</b>' +
+      "<span>The record of the detector's backtest is missing. Restore " +
+      "<code>ledgerline/data/phase0.json</code> and run <code>ledgerline " +
+      "publish</code>.</span></div>";
   }
   const m = validation.measured || {};
   const words = validation.verdict === "KILL" && m.positive_hit_rate !== undefined
-    ? `<b>Failed its own test.</b><span>It flagged ${pct(m.positive_hit_rate)} ` +
-      "of the companies that went on to deteriorate. It needed " +
+    ? `<b>Accuracy Note</b><span>In testing, flags caught ${pct(m.positive_hit_rate)} ` +
+      "of the companies that later deteriorated. The goal was " +
       `${pct(m.positive_hit_rate_floor)}.</span>`
-    : `<b>${esc(validation.status)}.</b><span>${esc(validation.statement)}</span>`;
+    : `<b>${esc(validation.status)}</b><span>${esc(validation.statement)}</span>`;
   return `<div class="banner" role="note" data-status="${esc(validation.status)}">` +
-    `${words}<a href="/verdict">Details</a></div>`;
+    `${words}<a href="/verdict">How It Was Tested</a></div>`;
 }
 
 function nav(current) {
@@ -191,7 +198,7 @@ function nav(current) {
     `${icon(ic)}<span>${label}</span></a>`).join("") + "</nav>";
 }
 
-export function layout({ title, current, validation, body, generated }) {
+export function layout({ title, current, validation, body }) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -207,18 +214,15 @@ ${banner(validation)}
 <aside class="side">
   <div class="brand">${logo()}<h1><a href="/">Ledgerline</a></h1></div>
   <form class="search" method="get" action="/company" role="search">
-    ${icon("search")}<input type="text" name="ticker" placeholder="Find a ticker"
+    ${icon("search")}<input type="text" name="ticker" placeholder="Go to Ticker"
       aria-label="Ticker" autocomplete="off" spellcheck="false">
   </form>
   ${nav(current)}
-  <p class="side-foot">Runs on this machine only.${generated ? `<br>Updated ${date(generated)}.` : ""}</p>
 </aside>
 <main class="main">
   <div class="content">
 ${body}
   </div>
-  <footer class="foot">Raw data: <a href="/digest">digest</a> ·
-    <a href="/signals">signals</a> · <a href="/validation">validation</a></footer>
 </main>
 </div>
 </body>
@@ -235,123 +239,113 @@ export function message({ title, current, validation, heading, paragraphs }) {
 
 // ------------------------------------------------------------------ overview
 
-// Where the overview's numbers came from. A replay over the practice half
-// used to render as "Latest run" with nothing saying it wasn't live.
-const REPLAY_SPLIT = {
-  tuning: " on the practice half, the companies used to tune the thresholds",
-  holdout: " on the sealed test half",
-};
-const LIVE_SOURCES = ["scan", "score", "emit"];
-
-export function provenance(run) {
-  const source = run.source || "unrecorded";
-  if (source === "replay") {
-    return `A replay${REPLAY_SPLIT[run.split] || ""}. Not a live result.`;
-  }
-  if (LIVE_SOURCES.includes(source)) {
-    return `A live run on ${date(run.run_date)}.`;
-  }
-  return `Recorded as “${esc(source)}”${run.split ? `, ${esc(run.split)} half` : ""}, ` +
-    `${date(run.run_date)}.`;
-}
-
-function testSummary(validation) {
+// The two numbers that say how far to trust a flag.
+function trackRecord(validation) {
   const m = (validation || {}).measured;
   if (!m) return "";
-  const failed = validation.verdict === "KILL";
-  const row = (label, value, bar, sub) =>
-    `<div class="check-row"><div class="check-row-top"><span>${label}</span>` +
-    `<b>${value}</b></div>${bar}<span class="sub">${sub}</span></div>`;
-  return section({ title: "How it did on its test",
-    body: '<div class="check-list">' +
-      row("Deteriorations caught", pct(m.positive_hit_rate),
-        meter(m.positive_hit_rate, 1, { mark: m.positive_hit_rate_floor, danger: failed }),
-        `Needed ${pct(m.positive_hit_rate_floor)}`) +
-      row("False alarms per quarter", pct(m.fpr_per_control_quarter, 2),
-        meter(m.fpr_per_control_quarter, 0.06, { mark: m.naive_baseline_fpr, danger: failed }),
-        `A two-line rule managed ${pct(m.naive_baseline_fpr, 2)}`) +
-      row("Healthy companies flagged", pct(m.fpr_per_filer),
-        meter(m.fpr_per_filer, 1, { danger: failed }), "At least once") +
-      '</div><p class="note"><a href="/verdict">All six checks</a></p>' });
+  return section({ title: "Track Record",
+    body: '<div class="panel panel-body facts-big">' +
+      `<div><b>${pct(m.positive_hit_rate)}</b><p>of companies that later ` +
+      `deteriorated were flagged in time. The goal was ${pct(m.positive_hit_rate_floor)}.</p></div>` +
+      `<div><b>${pct(m.fpr_per_filer)}</b><p>of healthy companies were ` +
+      "flagged at least once.</p></div>" +
+      '<a class="more-link" href="/verdict">How It Was Tested</a></div>' });
 }
 
-export function overview(digest, extra = {}) {
-  const run = digest.run || {};
-  const expected = Number(digest.expected_false_positives_if_nothing_wrong ?? 0);
-  const fires = list(digest.fires);
-  const wl = extra.watchlist;
-  const last = extra.lastRun;
+// Whether the page is showing current readings or backtest replays. A replay
+// once rendered as the latest run with nothing saying otherwise.
+export function freshness(assessed) {
+  const a = assessed || {};
+  if (!a.live && !a.replay) return "";
+  if (!a.live) {
+    return `Showing backtest replays through ${date(a.newest)}, not current ` +
+      "readings. Run <code>ledgerline assess</code> to assess every company now.";
+  }
+  return `Assessed ${date(a.newest)}.`;
+}
+
+export function overview(data) {
+  const counts = data.counts || {};
+  const assessed = data.assessed || {};
+  const flagged = list(data.flagged);
+  const filings = list(data.filings);
+  const scan = data.last_scan;
+
+  if (!assessed.live && !assessed.replay) {
+    return layout({ title: "Overview", current: "/", validation: data.validation,
+      body: head("Overview", `${plural(data.n_companies, "company", "companies")} watched.`) +
+        '<div class="empty"><h2>Nothing Assessed Yet</h2>' +
+        "<p>Run <code>ledgerline assess</code> to assess every watched company. " +
+        "It takes about a minute.</p></div>" });
+  }
 
   const strip = stats([
-    { label: "Assessed", value: num(run.scoreable),
-      sub: `${num(run.unscoreable)} couldn't be` },
-    { label: "Flagged", value: num(run.gated_in), tone: run.gated_in ? "danger" : "",
-      sub: `About ${Math.round(expected)} by chance alone` },
-    wl && { label: "Watched", value: num(wl.n_companies),
-      sub: `${num(wl.n_assessable)} can be assessed` },
-    last && { label: "Last scan",
-      value: esc(monthDay(String(last.started_at || "").slice(0, 10))),
-      sub: plural(last.universe_hits, "new filing", "new filings") },
+    { label: "Flagged", value: num(counts.flagged), tone: counts.flagged ? "danger" : "",
+      sub: `of ${num((counts.flagged || 0) + (counts.clear || 0))} assessed` },
+    { label: "Not Flagged", value: num(counts.clear) },
+    { label: "Can't Assess", value: num(counts.unassessable), sub: "Too little data" },
+    scan && { label: "Last Check", value: esc(shortDate(scan.started_at)),
+      sub: plural(scan.universe_hits, "new filing", "new filings") },
   ]);
 
-  const flagged = fires.length === 0
-    ? '<div class="panel"><p class="panel-empty">Nothing was flagged in this run.</p></div>'
+  const more = (counts.flagged || 0) > flagged.length
+    ? `<p class="note"><a href="/watchlist?status=flagged&sort=score">All ${num(counts.flagged)} flagged companies</a></p>` : "";
+  const flaggedBody = flagged.length === 0
+    ? '<div class="panel"><p class="panel-empty">No company is flagged right now.</p></div>'
     : `<div class="panel"><div class="table-wrap"><table>
-      <thead><tr><th>Company</th><th>Score</th><th>Out of line</th></tr></thead>
-      <tbody>${fires.map((f) => `<tr>
-        <td class="co"><a href="/company/${encodeURIComponent(f.ticker)}">${esc(f.ticker)}</a></td>
-        <td>${scoreCell(f.score, true)}</td>
-        <td><div class="chips">${list(f.flags).map((x) =>
-          pill(esc(PLAIN[x] || x))).join("")}</div></td>
-      </tr>`).join("")}</tbody></table></div></div>
-      <p class="note">A flag means two or more measures broke from the
-        company's own history. It isn't proof of a problem.</p>`;
+      <thead><tr><th>Company</th><th>Score</th><th>Out of Line</th></tr></thead>
+      <tbody>${flagged.map((f) => `<tr>
+        ${coCell(f.ticker, f.name)}
+        <td><div class="assess">${scoreCell(f.score, true)}${f.source === "replay"
+          ? pill("Replay", "none") : ""}</div></td>
+        <td>${tags(f.flags, 3)}</td>
+      </tr>`).join("")}</tbody></table></div></div>${more}`;
+
+  const filingsBody = filings.length === 0
+    ? '<div class="panel"><p class="panel-empty">No new reports yet.</p></div>'
+    : `<div class="panel"><ul class="rows">${filings.map((f) =>
+      `<li><a class="row-main" href="/company/${encodeURIComponent(f.ticker || "")}">` +
+      `<b>${esc(f.ticker || "—")}</b><span>${esc(f.name || "")}</span></a>` +
+      `<a class="row-meta" href="${esc(secUrl(f.cik, f.accession))}" rel="noreferrer" ` +
+      `title="Open this filing on the SEC's site">${pill(esc(f.form))}` +
+      `<span class="num">${shortDate(f.filed)}</span></a></li>`).join("")}</ul></div>`;
 
   const body = head("Overview",
-    `Latest run ${date(run.run_date)}. ${provenance(run)}`) +
+    `${plural(data.n_companies, "company", "companies")} watched. ${freshness(assessed)}`) +
     strip +
     '<div class="section cols">' +
-    section({ title: "Flagged", body: flagged }) +
-    testSummary(digest.validation) + "</div>";
-  return layout({ title: "Overview", current: "/", validation: digest.validation, body });
+    section({ title: "Flagged Companies",
+      sub: "Two or more measures broke from the company's own history. Highest score first.",
+      body: flaggedBody }) +
+    "<div>" +
+    section({ title: "Latest Reports", sub: "Quarterly and annual filings.",
+      body: filingsBody }) +
+    trackRecord(data.validation) + "</div></div>";
+  return layout({ title: "Overview", current: "/", validation: data.validation, body });
 }
 
 // ----------------------------------------------------------------- watchlist
 
-// Chips worth a reader's attention. Missing measures are already drawn as
-// ticks, and "no assessment saved" is already the row's pill.
-function notes(items) {
-  const keep = list(items).filter((c) =>
-    !/measures? unavailable|no assessment saved/.test(c.label || ""));
-  if (!keep.length) return "";
-  return '<div class="chips">' + keep.map((c) =>
-    `<span class="pill${/cannot assess|failed|no filings|never fetched/.test(c.label)
-      ? " danger" : ""}" title="${esc(c.detail)}">${esc(c.label)}</span>`).join("") +
-    "</div>";
-}
-
 // The first clause of a reason, for a table cell; the whole of it is on hover.
 function shortReason(reason) {
-  const r = String(reason || "No reason recorded.").replace(/^Cannot assess:\s*/, "");
+  const r = String(reason || "").replace(/^Cannot assess:\s*/, "");
   const cut = r.split(/ -- |; /)[0];
   return cut.charAt(0).toUpperCase() + cut.slice(1);
 }
 
 // An unassessed company gets words, never a number.
-function lastAssessment(c) {
+function scoreColumn(c) {
   const l = c.latest;
-  if (!l) return pill("nothing assessed yet", "none");
-  if (!l.scoreable) {
-    return pill("could not assess", "none") +
-      `<span class="sub" title="${esc(l.reason || "")}">${esc(shortReason(l.reason))}</span>`;
+  if (l && l.scoreable) {
+    return `<div class="assess">${scoreCell(l.score, l.flagged)}` +
+      `${l.flagged ? pill("Flagged", "danger") : ""}</div>`;
   }
-  const from = l.source === "replay"
-    ? ' · <span title="Replayed on the practice half, the companies used to ' +
-      'tune the thresholds">replay</span>'
-    : "";
-  return `<div class="assess">${scoreCell(l.score, l.flagged)}` +
-    `${l.flagged ? pill("flagged", "danger") : ""}</div>` +
-    `<span class="sub">Quarter to ${date(l.period)}${from}</span>`;
+  const why = (l && l.reason) || c.assessable_reason || "";
+  if ((l && !l.scoreable) || c.assessable === false) {
+    return pill("Can't Assess", "none") + (why
+      ? `<span class="sub" title="${esc(why)}">${esc(shortReason(why))}</span>` : "");
+  }
+  return pill("Not Assessed", "none");
 }
 
 function coverage(c) {
@@ -365,42 +359,59 @@ function coverage(c) {
     `<span class="ticks-label">${num(have)}/${num(all)}</span>`;
 }
 
-const ASSESSABLE_OPTIONS = [
+const STATUS_TABS = [
   ["", "All"],
-  ["yes", "Assessable"],
-  ["no", "Not assessable"],
-  ["unknown", "Unchecked"],
+  ["flagged", "Flagged"],
+  ["clear", "Not Flagged"],
+  ["unassessable", "Can't Assess"],
+  ["pending", "Not Assessed"],
 ];
 
-// The three states as modifiers of "companies", for the sentence that
-// restates a filter which matched nothing.
+// Each filter as a modifier of "companies", for the sentence that restates a
+// filter which matched nothing.
+const STATUS_PHRASE = {
+  flagged: "that are flagged",
+  clear: "that aren't flagged",
+  unassessable: "that can't be assessed",
+  pending: "that haven't been assessed",
+};
 const ASSESSABLE_PHRASE = {
   yes: "that can be assessed",
   no: "that cannot be assessed",
   unknown: "not checked yet",
 };
 
-function filters(data, f) {
-  const groupOpts = ['<option value="">All groups</option>'].concat(
-    list(data.groups).map((g) =>
-      `<option value="${esc(g.name)}"${g.name === f.group ? " selected" : ""}>` +
-      `${esc(g.name)} (${num(g.n)})</option>`)).join("");
-  const states = ASSESSABLE_OPTIONS.map(([v, label]) => {
-    const on = v === (f.assessable || "");
-    return `<a href="/watchlist${query({ q: f.q, group: f.group, assessable: v })}"` +
-      `${on ? ' class="on" aria-current="true"' : ""}>${label}</a>`;
-  }).join("");
+function toolbar(data, f) {
+  const counts = data.counts || {};
+  const total = list(data.companies).length;
+  const keep = { q: f.q, group: f.group, sort: f.sort };
+  const tabs = STATUS_TABS
+    .filter(([v]) => v !== "pending" || counts.pending || f.status === "pending")
+    .map(([v, label]) => {
+      const on = v === (f.status || "") && !f.assessable;
+      const n = v ? counts[v] : total;
+      return `<a href="/watchlist${query({ ...keep, status: v })}"` +
+        `${on ? ' class="on" aria-current="true"' : ""}>${label}` +
+        `${n === undefined ? "" : ` <span>${num(n)}</span>`}</a>`;
+    }).join("");
+  const groups = list(data.groups).filter((g) => g.n > 0 || g.name === f.group);
+  const groupRow = groups.length
+    ? '<nav class="tabs-row sub-row" aria-label="Groups"><span class="muted">Groups</span>' +
+      `<a href="/watchlist${query({ ...keep, status: f.status, group: "" })}"${f.group ? "" : ' class="on"'}>All</a>` +
+      groups.map((g) => `<a href="/watchlist${query({ ...keep, status: f.status, group: g.name })}"` +
+        `${g.name === f.group ? ' class="on"' : ""}>${esc(g.name)} <span>${num(g.n)}</span></a>`).join("") +
+      "</nav>"
+    : "";
   return `<div class="toolbar">
-  <form class="filters" method="get" action="/watchlist">
-    <input type="text" name="q" value="${esc(f.q)}" placeholder="Ticker or name"
-      aria-label="Ticker or name">
-    ${list(data.groups).length ? `<select name="group" aria-label="Group">${groupOpts}</select>` : ""}
-    ${f.assessable ? `<input type="hidden" name="assessable" value="${esc(f.assessable)}">` : ""}
-    <button type="submit" class="btn quiet">Search</button>
-    ${f.q || f.group || f.assessable ? '<a class="clear" href="/watchlist">Clear</a>' : ""}
+  <form class="find" method="get" action="/watchlist" role="search">
+    ${icon("search")}<input type="text" name="q" value="${esc(f.q)}"
+      placeholder="Search by Name or Ticker" aria-label="Search by name or ticker">
+    ${f.status ? `<input type="hidden" name="status" value="${esc(f.status)}">` : ""}
+    ${f.group ? `<input type="hidden" name="group" value="${esc(f.group)}">` : ""}
+    ${f.sort ? `<input type="hidden" name="sort" value="${esc(f.sort)}">` : ""}
   </form>
-  <nav class="seg" aria-label="Filter by whether a company can be assessed">${states}</nav>
-</div>`;
+  <nav class="tabs-row" aria-label="Filter by status">${tabs}</nav>
+</div>${groupRow}`;
 }
 
 // Four ways to get an empty table, and four different pieces of news. An
@@ -430,6 +441,7 @@ function emptyExplanation(data, f) {
   // "companies are ..." produced "companies are that cannot be assessed", and
   // "none of your companies cannot be assessed" claims they all can.
   const bits = ["companies"];
+  if (f.status) bits.push(STATUS_PHRASE[f.status]);
   if (f.assessable) bits.push(ASSESSABLE_PHRASE[f.assessable]);
   if (f.group) bits.push(`in the group “${esc(f.group)}”`);
   if (f.q) bits.push(`with “${esc(f.q)}” in the ticker or name`);
@@ -444,7 +456,7 @@ function emptyExplanation(data, f) {
   if (f.assessable === "unknown" && !f.q && !f.group) {
     out.push("Every watched company has been checked.");
   }
-  out.push('<a href="/watchlist">Show all</a>');
+  out.push('<a href="/watchlist">Show All</a>');
   return out;
 }
 
@@ -459,11 +471,27 @@ function assessableSentence(data) {
   return "None of them have been checked yet. Run <code>ledgerline check</code>.";
 }
 
-const SCORE_NOTE = "Scores run 0–100 against the company's own history. " +
-  "A score of 45 with two measures out of line is a flag. No flag doesn't " +
-  "mean the company is fine.";
+export const PAGE_SIZE = 50;
 
-export const PAGE_SIZE = 250;
+// Page links: first, last, and the two either side of the current page.
+function pager(page, pages, href) {
+  if (pages <= 1) return "";
+  const want = new Set([1, pages, page - 1, page, page + 1]);
+  const shown = [...want].filter((p) => p >= 1 && p <= pages).sort((a, b) => a - b);
+  let out = "";
+  let prev = 0;
+  for (const p of shown) {
+    if (p - prev > 1) out += '<span class="gap">…</span>';
+    out += p === page ? `<b aria-current="page">${num(p)}</b>`
+      : `<a href="${href(p)}">${num(p)}</a>`;
+    prev = p;
+  }
+  return '<nav class="pages-nav" aria-label="Pages">' +
+    (page > 1 ? `<a href="${href(page - 1)}">Previous</a>` : '<span class="off">Previous</span>') +
+    out +
+    (page < pages ? `<a href="${href(page + 1)}">Next</a>` : '<span class="off">Next</span>') +
+    "</nav>";
+}
 
 export function watchlist(data, f) {
   const q = (f.q || "").trim().toLowerCase();
@@ -472,64 +500,66 @@ export function watchlist(data, f) {
                String(c.name || "").toLowerCase().includes(q))) return false;
     if (f.group && !list(c.groups).some(
       (g) => g.toLowerCase() === f.group.toLowerCase())) return false;
+    if (f.status && c.status !== f.status) return false;
     if (f.assessable === "yes" && c.assessable !== true) return false;
     if (f.assessable === "no" && c.assessable !== false) return false;
     if (f.assessable === "unknown" && c.assessable !== null) return false;
     return true;
   });
+  // Published order is by ticker. Sorting by score puts the highest first and
+  // every company without a score after them.
+  if (f.sort === "score") {
+    const s = (c) => (c.latest && c.latest.scoreable ? Number(c.latest.score) : -1);
+    rows.sort((a, b) => s(b) - s(a));
+  }
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const page = Math.min(Math.max(1, Number(f.page) || 1), pages);
   const shown = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const watched = list(data.companies).length;
+  const href = (p) => `/watchlist${query({ ...f, page: p > 1 ? p : "" })}`;
+  const sortLink = (key, label) => {
+    const on = (f.sort || "ticker") === key;
+    return `<a class="sort${on ? " on" : ""}" href="/watchlist${query({ ...f, sort: key === "ticker" ? "" : key, page: "" })}">` +
+      `${label}${on ? (key === "score" ? " ↓" : " ↑") : ""}</a>`;
+  };
 
-  const strip = stats([
-    { label: "Can be assessed", value: num(data.n_assessable) },
-    data.n_checked ? { label: "Can't be assessed",
-      value: num(data.n_checked - (data.n_assessable || 0)) } : null,
-    { label: "Flagged", value: num(data.n_flagged),
-      tone: data.n_flagged ? "danger" : "" },
-  ]);
-
-  let inner = filters(data, f);
+  let inner = toolbar(data, f);
   if (!rows.length) {
     inner += '<div class="panel-empty">' +
       emptyExplanation(data, f).map((p) => `<p>${p}</p>`).join("") + "</div>";
   } else {
-    inner += `<div class="table-wrap"><table>
-    <thead><tr><th>Company</th><th>Measures</th><th>Latest assessment</th><th>Notes</th></tr></thead>
+    const from = (page - 1) * PAGE_SIZE + 1;
+    const count = `<span class="muted">${num(from)}–${num(from + shown.length - 1)} of ${num(rows.length)}</span>`;
+    inner += `<div class="pager top">${count}${pager(page, pages, href)}</div>
+    <div class="table-wrap"><table>
+    <thead><tr><th>${sortLink("ticker", "Company")}</th><th>${sortLink("score", "Score")}</th>
+      <th>Out of Line</th><th>Quarter Ended</th><th>Measures With Data</th></tr></thead>
     <tbody>${shown.map((c) => `<tr>
-      <td class="co"><a href="/company/${encodeURIComponent(c.ticker || "")}">${esc(c.ticker || "—")}</a>
-        <span>${esc(c.name || "")}${list(c.groups).length ? ` · ${list(c.groups).map(esc).join(", ")}` : ""}</span></td>
+      ${coCell(c.ticker, c.name)}
+      <td>${scoreColumn(c)}</td>
+      <td>${c.latest && c.latest.scoreable ? tags(c.latest.flags, 3) : ""}</td>
+      <td class="num">${c.latest && c.latest.scoreable ? date(c.latest.period) +
+        (c.latest.source === "replay" ? '<span class="sub">Backtest replay</span>' : "") : ""}</td>
       <td class="num">${coverage(c)}</td>
-      <td>${lastAssessment(c)}</td>
-      <td>${notes(c.quality)}</td>
     </tr>`).join("")}</tbody>
-    </table></div>`;
-    if (pages > 1) {
-      inner += `<div class="pager">
-        ${page > 1 ? `<a class="btn quiet" href="/watchlist${query({ ...f, page: page - 1 })}">Previous</a>` : "<span></span>"}
-        <span class="muted">Page ${num(page)} of ${num(pages)}</span>
-        ${page < pages ? `<a class="btn quiet" href="/watchlist${query({ ...f, page: page + 1 })}">Next</a>` : "<span></span>"}
-      </div>`;
-    }
+    </table></div>
+    ${pages > 1 ? `<div class="pager">${count}${pager(page, pages, href)}</div>` : ""}`;
   }
   const sentence = assessableSentence(data);
-  const shownLine = rows.length === watched ? plural(watched, "company", "companies")
-    : `${num(rows.length)} of ${plural(watched, "company", "companies")}`;
-  const body = head("Watchlist", shownLine) + strip +
-    (sentence ? `<p class="note">${sentence}</p>` : "") +
-    `<div class="section"><div class="panel">${inner}</div>
-    <p class="note">${SCORE_NOTE}</p></div>`;
-  return layout({
-    title: "Watchlist", current: "/watchlist",
-    validation: data.validation, body, generated: data.generated,
-  });
+  const body = head("Watchlist", plural(watched, "company", "companies")) +
+    (sentence ? `<p class="note lead-note">${sentence}</p>` : "") +
+    `<div class="panel">${inner}</div><p class="note">${SCORE_NOTE}</p>`;
+  return layout({ title: "Watchlist", current: "/watchlist", validation: data.validation, body });
 }
+
+const SCORE_NOTE = "A score compares a company with its own history, from 0 " +
+  "to 100. A score of 45 with two measures out of line is a flag. No flag " +
+  "doesn't mean the company is fine.";
 
 // ------------------------------------------------------------------- company
 
 /* Distance from the company's own normal, on one axis for every row: from 4
-   times its usual wobble the harmless way to 6 times the bad-news way. The
+   times its usual swing the harmless way to 6 times the bad-news way. The
    shaded zone starts at the trigger, 2. The published z is signed so that
    positive is the bad-news direction, and the row's own out_of_line flag
    picks the colour, so a big move the harmless way is never red. A floored
@@ -559,20 +589,20 @@ function distance(m) {
 function measuresTable(measures) {
   if (!measures.length) return "";
   return `<div class="panel"><div class="table-wrap"><table>
-  <thead><tr><th>Measure</th><th>Distance from its normal</th><th>Reading</th></tr></thead>
+  <thead><tr><th>Measure</th><th>Distance From Normal</th><th>What It Shows</th></tr></thead>
   <tbody>${measures.map((m) => {
     let says;
     if (m.unavailable_reason) {
       says = `<span class="muted" title="${esc(m.unavailable_reason)}">No data</span>`;
     } else if (m.out_of_line) {
       says = `<span class="says-flag">${esc(m.breaks_when)}</span>` +
-        (m.floored ? '<span class="sub">This figure barely moves, so treat ' +
-          "the multiple as a ceiling.</span>" : "");
+        (m.floored ? '<span class="sub">This figure rarely moves, so the ' +
+          "size of the move is overstated.</span>" : "");
     } else {
       says = '<span class="muted">Normal</span>';
     }
     return `<tr class="${m.unavailable_reason ? "na" : ""}">
-      <td><span${m.technical ? ` title="${esc(m.technical)}"` : ""}>${esc(m.measure)}</span></td>
+      <td>${esc(m.measure)}</td>
       <td>${m.unavailable_reason ? "" : distance(m)}</td>
       <td class="says">${says}</td></tr>`;
   }).join("")}</tbody>
@@ -588,13 +618,12 @@ function filingsSection(page) {
   }
   const chart = filingTimeline(f);
   return `<div class="panel">${chart ? `<div class="panel-body">${chart}</div>` : ""}
-  <details class="more"><summary>All ${plural(f.length, "filing", "filings")}</summary>
+  <details class="more"><summary>All ${plural(f.length, "Filing", "Filings")}</summary>
   <div class="table-wrap"><table>
-  <thead><tr><th>Form</th><th>Filed</th><th>Period</th><th>Accession</th></tr></thead>
+  <thead><tr><th>Form</th><th>Filed</th><th>Period</th><th>SEC Filing</th></tr></thead>
   <tbody>${f.map((r) => `<tr>
     <td>${esc(r.form || "—")}</td><td class="num">${date(r.filed)}</td>
-    <td class="num">${date(r.period)}${r.n_periods > 1
-      ? ` <span class="muted">(${num(r.n_periods)} quarters)</span>` : ""}</td>
+    <td class="num">${date(r.period)}</td>
     <td class="acc"><a href="${esc(secUrl(page.cik, r.accession))}"
       rel="noreferrer">${esc(r.accession)}</a></td></tr>`).join("")}</tbody>
   </table></div></details></div>`;
@@ -614,7 +643,7 @@ function revisionsSection(page) {
     return '<div class="panel"><p class="panel-empty">None recorded yet.</p></div>';
   }
   return `<div class="panel"><div class="table-wrap"><table>
-  <thead><tr><th>Figure</th><th>Quarter to</th><th class="r">Was</th>
+  <thead><tr><th>Figure</th><th>Quarter Ended</th><th class="r">Was</th>
     <th class="r">Now</th><th class="r">Change</th><th>Revised</th></tr></thead>
   <tbody>${r.map((x) => `<tr>
     <td>${esc(x.metric_plain || x.metric)}</td>
@@ -623,7 +652,7 @@ function revisionsSection(page) {
     <td class="r num">${reading(x.value)}</td>
     <td class="r num">${x.rel_change === null || x.rel_change === undefined
       ? "—" : `${(x.rel_change * 100).toFixed(1)}%`}</td>
-    <td class="num">${date(x.filed)}${x.on_amendment ? " · amendment" : ""}</td>
+    <td class="num">${date(x.filed)}</td>
   </tr>`).join("")}</tbody>
   </table></div></div>`;
 }
@@ -648,22 +677,16 @@ function sourcesSection(page, cik) {
   if (prov.label === "TRACED") lines.push("Every figure is traced to its filing.");
   else if (prov.label === "PARTIAL") lines.push("Some figures couldn't be traced to a filing.");
   else if (prov.label) lines.push("These figures couldn't be traced, so no score was published.");
-  if (prov.derived_fraction !== null && prov.derived_fraction !== undefined) {
-    lines.push(`${(prov.derived_fraction * 100).toFixed(0)}% were worked out by ` +
-      "subtracting one year-to-date report from another" +
-      (prov.derived_fraction_high ? ", more than any other filer measured." : "."));
-  }
   const intro = lines.length ? `<p class="note">${lines.map(esc).join(" ")}</p>` : "";
   if (!measures.length) {
     return '<div class="panel"><p class="panel-empty">No measure broke from its ' +
       `pattern, so there's nothing to trace.</p></div>${intro}`;
   }
   return `<div class="panel"><div class="table-wrap"><table>
-    <thead><tr><th>Measure</th><th>Figure</th><th>Period</th><th>Filing</th></tr></thead>
+    <thead><tr><th>Measure</th><th>Figure</th><th>Period</th><th>SEC Filing</th></tr></thead>
     <tbody>${measures.map((m) => list(m.inputs).map((t, i) =>
       `<tr><td>${i === 0 ? esc(m.measure) : ""}</td>
-        <td>${esc(t.figure)}${t.origin === "derived"
-          ? ' <span class="muted" title="Worked out from year-to-date reports">(derived)</span>' : ""}</td>
+        <td>${esc(t.figure)}</td>
         <td class="num">${date(t.period)}</td>
         <td class="acc">${list(t.sources).map((a) =>
           `<a href="${esc(secUrl(cik, a))}" rel="noreferrer">${esc(a)}</a>`)
@@ -675,41 +698,41 @@ function sourcesSection(page, cik) {
 function historySection(page) {
   const h = list(page.history);
   if (h.length < 2) return "";
-  return section({ id: "history", title: "Every assessment",
+  return section({ id: "history", title: "All Assessments",
     body: `<div class="panel"><details class="more first"><summary>Show ${num(h.length)}</summary>
   <div class="table-wrap"><table>
-  <thead><tr><th>Data as of</th><th>Quarter to</th><th>Score</th><th>Out of line</th></tr></thead>
+  <thead><tr><th>Data Through</th><th>Quarter Ended</th><th>Score</th><th>Out of Line</th></tr></thead>
   <tbody>${h.map((r) => `<tr><td class="num">${date(r.as_of)}</td>
     <td class="num">${date(r.period)}</td>
-    <td>${!r.scoreable ? pill("could not assess", "none")
+    <td>${!r.scoreable ? pill("Can't Assess", "none")
       : `<div class="assess">${scoreCell(r.score, r.flagged)}${r.flagged
-        ? pill("flagged", "danger") : ""}</div>`}</td>
-    <td class="muted">${list(r.flags).map(esc).join(", ") || "—"}</td></tr>`).join("")}</tbody>
+        ? pill("Flagged", "danger") : ""}</div>`}</td>
+    <td>${tags(r.flags)}</td></tr>`).join("")}</tbody>
   </table></div></details></div>` });
 }
 
 function latestPanel(page) {
   const l = page.latest;
   const measures = list(page.measures);
-  const label = '<div class="stat-label">Latest assessment</div>';
+  const label = '<div class="stat-label">Latest Assessment</div>';
   if (!l) {
     return `<div class="panel panel-body">${label}` +
-      `<p class="pill-row">${pill("nothing assessed yet", "none")}</p>` +
-      `<p class="note">Save one with <code>ledgerline score ${esc(page.ticker)} ` +
-      "--emit</code>.</p></div>";
+      `<p class="pill-row">${pill("Not Assessed", "none")}</p>` +
+      '<p class="note">Run <code>ledgerline assess</code>.</p></div>';
   }
   const run = l.run || {};
   const facts = [
-    ["Quarter to", date(l.period)],
-    ["Data as of", date(l.as_of)],
-    run.source ? ["Source", run.source === "replay" ? "Replay" : esc(run.source)] : null,
+    ["Quarter Ended", date(l.period)],
+    ["Data Through", date(l.as_of)],
+    run.source === "replay" ? ["Type", "Backtest Replay"] : null,
   ].filter(Boolean);
   const factList = `<dl class="facts">${facts.map(([k, v]) =>
     `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
   if (!l.scoreable) {
     return `<div class="panel panel-body">${label}` +
-      `<p class="pill-row">${pill("could not assess", "none")}</p>` +
-      `<p class="note">${esc(l.reason || "No reason recorded.")}</p>${factList}</div>`;
+      `<p class="pill-row">${pill("Can't Assess", "none")}</p>` +
+      `<p class="note">${esc(shortReason(l.reason) || "No reason recorded.")}</p>` +
+      `<dl class="facts"><div><dt>Data Through</dt><dd>${date(l.as_of)}</dd></div></dl></div>`;
   }
   let strip = "";
   if (measures.length) {
@@ -724,11 +747,11 @@ function latestPanel(page) {
   return `<div class="panel panel-body">${label}<div class="big">` +
     `<span class="big-num${l.flagged ? " danger" : ""}">${esc(l.score)}</span>` +
     '<span class="muted">/ 100</span>' +
-    (l.flagged ? pill("flagged", "danger") : pill("not flagged")) + "</div>" +
+    (l.flagged ? pill("Flagged", "danger") : pill("Not Flagged")) + "</div>" +
     '<div class="gauge" role="img" aria-label="Score against the flag line at 45">' +
     `<span class="gauge-fill${l.flagged ? " danger" : ""}" ` +
     `style="width:${clamp100(l.score).toFixed(1)}%"></span>` +
-    `<span class="gauge-mark" style="left:${FLAG_LINE}%"><span>${FLAG_LINE}</span></span></div>` +
+    `<span class="gauge-mark" style="left:${FLAG_LINE}%"><span>Flag at ${FLAG_LINE}</span></span></div>` +
     strip + factList + "</div>";
 }
 
@@ -743,7 +766,7 @@ export function company(page) {
   const top = `<header class="co-head">
   <div class="co-id"><span class="badge">${esc(page.ticker)}</span>
     <div><h2>${esc(page.name || page.ticker)}</h2><p>${meta}</p></div></div>
-  ${archive ? `<a class="btn quiet" href="${esc(archive)}" rel="noreferrer">${icon("external")}SEC filings</a>` : ""}
+  ${archive ? `<a class="btn quiet" href="${esc(archive)}" rel="noreferrer">${icon("external")}SEC Filings</a>` : ""}
 </header>
 <nav class="tabs" aria-label="Sections">
   <a href="#summary">Summary</a><a href="#measures">Measures</a>
@@ -752,9 +775,9 @@ export function company(page) {
 
   const chart = history.length >= 2
     ? '<div class="panel panel-body"><div class="section-head">' +
-      '<div class="stat-label">Score history</div>' +
-      legend([["danger", "flagged"], ["", "not flagged"], ["na", "couldn't assess"],
-        ["line", `flag line ${FLAG_LINE}`]]) + "</div>" +
+      '<div class="stat-label">Score History</div>' +
+      legend([["danger", "Flagged"], ["", "Not Flagged"], ["na", "Can't Assess"],
+        ["line", `Flag at ${FLAG_LINE}`]]) + "</div>" +
       scoreHistory(history, FLAG_LINE) + "</div>"
     : "";
   const summary = `<div class="summary${chart ? "" : " solo"}" id="summary">` +
@@ -763,197 +786,146 @@ export function company(page) {
   const body = top + summary +
     section({ id: "measures", title: "Measures",
       sub: "How far each one sits from this company's own normal.",
-      aside: measures.length ? legend([["", "normal"], ["danger", "out of line"],
-        ["ring", "ceiling"]]) : "",
+      aside: measures.length ? legend([["", "Normal"], ["danger", "Out of Line"],
+        ["ring", "Rarely Moves"]]) : "",
       body: measuresTable(measures) || '<div class="panel"><p class="panel-empty">' +
         "No readings yet.</p></div>" }) +
     section({ id: "filings", title: "Filings",
-      aside: list(page.filings).length >= 2 ? legend([["chart", "annual"],
-        ["", "quarterly"], ["na", "other"]]) : "",
+      aside: list(page.filings).length >= 2 ? legend([["chart", "Annual"],
+        ["", "Quarterly"], ["na", "Other"]]) : "",
       body: filingsSection(page) }) +
-    section({ id: "revisions", title: "Revised figures", body: revisionsSection(page) }) +
-    section({ id: "sources", title: "Sources", body: sourcesSection(page, page.cik) }) +
+    section({ id: "revisions", title: "Revised Figures",
+      sub: "Past numbers the company later changed.", body: revisionsSection(page) }) +
+    section({ id: "sources", title: "Sources",
+      sub: "The filing behind each figure that's out of line.",
+      body: sourcesSection(page, page.cik) }) +
     historySection(page);
-  return layout({
-    title: page.ticker, current: "/company",
-    validation: page.validation, body, generated: page.generated,
-  });
-}
-
-// The Companies tab with no company named: a search box, and the companies
-// something was said about.
-export function companyIndex(data, note) {
-  const flagged = list(data.companies).filter(
-    (c) => (c.latest || {}).flagged).slice(0, 25);
-  const body = head("Companies", "Open any watched company.") +
-    (note ? `<div class="panel panel-body notice">${note}</div>` : "") +
-    `<form class="lookup" method="get" action="/company">
-  <input type="text" name="ticker" placeholder="Ticker, e.g. FMC" aria-label="Ticker" autocomplete="off">
-  <button type="submit" class="btn">Open</button>
-</form>` +
-    (flagged.length ? section({ title: "Flagged", body: `<div class="panel"><div class="table-wrap"><table>
-<thead><tr><th>Company</th><th>Score</th><th>Out of line</th></tr></thead>
-<tbody>${flagged.map((c) => `<tr>
-  <td class="co"><a href="/company/${encodeURIComponent(c.ticker)}">${esc(c.ticker)}</a>
-    <span>${esc(c.name || "")}</span></td>
-  <td>${scoreCell(c.latest.score, true)}</td>
-  <td><div class="chips">${list(c.latest.flags).map((x) => pill(esc(x))).join("")}</div></td></tr>`).join("")}</tbody>
-</table></div></div>` }) : "");
-  return layout({
-    title: "Companies", current: "/company",
-    validation: data.validation, body, generated: data.generated,
-  });
+  return layout({ title: page.ticker, current: "/watchlist", validation: page.validation, body });
 }
 
 // ------------------------------------------------------------------ activity
+
+const JOB_NAMES = { scan: "Filing Check", assess: "Full Assessment", backfill: "Download" };
 
 export function activity(data) {
   const runs = list(data.runs);
   if (!runs.length) {
     return layout({
       title: "Activity", current: "/activity", validation: data.validation,
-      generated: data.generated,
-      body: '<div class="empty"><h2>Nothing has run yet</h2>' +
+      body: '<div class="empty"><h2>Nothing Has Run Yet</h2>' +
         "<p>Run <code>ledgerline fetch</code>, then <code>ledgerline scan</code>.</p></div>",
     });
   }
-  const last = runs[0];
-  const strip = stats([
-    { label: "Last run", value: esc(monthDay(String(last.started_at || "").slice(0, 10))),
-      tone: last.status === "failed" ? "danger" : "", sub: esc(last.status) },
-    { label: "Requests to the SEC", value: num(last.requests),
-      sub: bytes(last.bytes_fetched) },
-    { label: "Filings listed", value: num(last.index_rows),
-      sub: `${num(last.universe_hits)} from watched companies` },
-    { label: "Revised figures", value: num(last.restatements) },
-  ]);
-  const chart = runHistory(runs);
+  const scans = runs.filter((r) => r.job === "scan");
+  const last = scans[0];
+  const strip = last ? stats([
+    { label: "Last Check", value: esc(shortDate(last.started_at)),
+      tone: last.status === "failed" ? "danger" : "",
+      sub: last.status === "failed" ? "Failed" : esc(clock(last.started_at)) },
+    { label: "New Filings", value: num(last.universe_hits),
+      sub: "From watched companies" },
+    { label: "Companies Updated", value: num(last.filers_done) },
+    { label: "Revised Figures", value: num(last.restatements),
+      sub: "Past numbers that changed" },
+  ]) : "";
+  const chart = runHistory(scans);
   const table = `<div class="panel"><div class="table-wrap"><table>
-  <thead><tr><th>Run</th><th>Started</th><th class="r">Took</th><th class="r">Requests</th>
-    <th class="r">Filings listed</th><th class="r">From watched</th><th class="r">Revised</th><th>Assessed</th></tr></thead>
+  <thead><tr><th>When</th><th>What Ran</th><th class="r">New Filings</th>
+    <th class="r">Companies Updated</th><th class="r">Revised Figures</th>
+    <th class="r">Assessed</th><th class="r">Flagged</th><th class="r">Took</th></tr></thead>
   <tbody>${runs.map((r) => {
     const secs = (r.started_at && r.finished_at)
       ? (new Date(r.finished_at) - new Date(r.started_at)) / 1000 : null;
+    const assessed = r.assessed === null || r.assessed === undefined ? null : r.assessed;
     return `<tr>
-    <td>${esc(r.job)} <span class="muted">#${esc(r.run_id)}</span>${r.status === "failed"
-      ? ` ${pill("failed", "danger")}` : ""}${r.error
-      ? `<span class="sub">${esc(String(r.error).split("\n")[0])}</span>` : ""}</td>
-    <td class="num">${date(r.started_at)}</td>
-    <td class="r num">${secs === null ? "—" : `${secs.toFixed(1)}s`}</td>
-    <td class="r num">${num(r.requests)}</td>
-    <td class="r num">${num(r.index_rows)}</td>
-    <td class="r num">${num(r.universe_hits)}</td>
-    <td class="r num">${num(r.restatements)}</td>
-    <td class="num">${r.assessed === null || r.assessed === undefined
-      ? '<span class="muted">—</span>'
-      : `${num(r.assessed)}${r.could_not_assess ? ` <span class="muted">(${num(r.could_not_assess)} couldn't)</span>` : ""}`}</td>
+    <td class="num">${date(r.started_at)}<span class="sub">${esc(clock(r.started_at))}</span></td>
+    <td>${esc(JOB_NAMES[r.job] || r.job)}${r.status === "failed"
+      ? ` ${pill("Failed", "danger")}<span class="sub">${esc(String(r.error || "").split("\n")[0])}</span>` : ""}</td>
+    <td class="r num">${r.job === "scan" ? num(r.universe_hits) : "—"}</td>
+    <td class="r num">${r.job === "assess" ? "—" : num(r.filers_done)}</td>
+    <td class="r num">${r.job === "assess" ? "—" : num(r.restatements)}</td>
+    <td class="r num">${assessed === null ? "—" : num(assessed)}</td>
+    <td class="r num">${assessed === null ? "—" : num(r.gated_in)}</td>
+    <td class="r num">${secs === null ? "—" : secs < 90 ? `${secs.toFixed(0)}s` : `${(secs / 60).toFixed(0)}m`}</td>
   </tr>`;
   }).join("")}</tbody>
   </table></div></div>`;
-  const body = head("Activity", "Every scan and fetch, newest first.") + strip +
-    (chart ? section({ title: "Filings from watched companies",
-      aside: legend([["chart", "run"], ["danger", "failed"]]),
+  const body = head("Activity", "Every check for new filings, newest first.") + strip +
+    (chart ? section({ title: "New Filings per Check",
       body: `<div class="panel panel-body">${chart}</div>` }) : "") +
-    section({ title: "Runs", body: table +
-      '<p class="note">A scan costs one request per day of filings, however ' +
-      "many companies you watch.</p>" });
-  return layout({
-    title: "Activity", current: "/activity",
-    validation: data.validation, body, generated: data.generated,
-  });
+    section({ title: "History", body: table });
+  return layout({ title: "Activity", current: "/activity", validation: data.validation, body });
 }
 
-// ------------------------------------------------------------------ the test
+// ------------------------------------------------------------------ accuracy
 
-// The page the banner links to. Every number and the wording of every check
+// The page the banner links to. Every number and the wording of every row
 // come from verdict.json, which ledgerline/api/views.py writes from the
-// frozen record.
+// frozen test record.
 export function verdict(data) {
   const v = data.validation || {};
+  const m = v.measured || {};
   const checks = list(data.checks);
-  const failed = v.verdict === "KILL";
   const cases = data.cases || {};
-  const per = data.per_filer || {};
-  const base = data.baseline || {};
   const fp = data.fingerprints || {};
   const reg = data.registry || {};
+  const lead = checks.find((c) => c.key === "median_lead_months");
+  const set = list(reg.reserved)[0];
 
-  const hero = '<div class="verdict-hero">' +
-    `<span class="big-num">${failed ? "Failed" : esc(v.status)}</span>` +
-    `<span>${num(data.n_failed)} of ${checks.length} checks missed</span></div>` +
-    '<p class="lead">Treat its flags as prompts to read the filings. No flag ' +
-    "doesn't mean a company is fine.</p>";
-
-  const rows = `<div class="panel"><div class="table-wrap"><table>
-  <thead><tr><th>Check</th><th class="r">Result</th><th class="r">Needed</th><th class="r">Outcome</th></tr></thead>
-  <tbody>${checks.map((c) => `<tr>
-    <td>${esc(c.name)}<span class="sub">${esc(c.explain)}</span></td>
-    <td class="r num${c.passed ? "" : " fail"}">${esc(c.result)}</td>
-    <td class="r num muted">${esc(c.required)}</td>
-    <td class="r">${c.passed ? '<span class="pass">Passed</span>' : pill("Failed", "danger")}</td>
-  </tr>`).join("")}</tbody></table></div></div>`;
-
-  const numbers = stats([
-    { label: "Healthy companies flagged at least once", value: pct(per.value),
-      tone: failed ? "danger" : "", sub: "Reported, not graded" },
-    { label: "Cases", value: `${num(cases.positives)} / ${num(cases.controls)}`,
-      sub: "Deteriorated / didn't" },
-    { label: "The two-line rule's false alarms", value: pct(base.fpr, 2),
-      sub: esc(base.rule || "") },
+  const strip = stats([
+    { label: "Troubled Companies Caught", value: pct(m.positive_hit_rate),
+      tone: "danger", sub: `Goal: ${pct(m.positive_hit_rate_floor)}` },
+    { label: "Healthy Companies Flagged", value: pct(m.fpr_per_filer),
+      sub: "At least once" },
+    lead && { label: "Typical Warning", value: esc(lead.result),
+      sub: "Before the trouble showed in a filing" },
   ]);
 
-  const eras = `<div class="eras">${list(data.regimes).map((r) =>
-    `<span class="pill${r.caught ? "" : " danger"}" title="${esc(r.detail)}">` +
-    `${icon(r.caught ? "check" : "x")}${esc(r.name)}</span>`).join("")}</div>`;
+  const meaning = `<p class="lead">A flag is a reason to open the filings. It
+    isn't a prediction. In this test the detector missed
+    ${pct(1 - Number(m.positive_hit_rate))} of the companies that later
+    deteriorated, and flagged ${pct(m.fpr_per_filer)} of the healthy ones at
+    least once.</p>`;
 
-  const repro = `<div class="cmd"><span>$</span>ledgerline reproduce</div>
-    <p class="note">Re-runs the exact code that scored the test and checks every
-      number above. Write-up: <code>${esc(data.writeup || "reports/PHASE0.md")}</code>.</p>
+  const steps = `<ol class="steps">
+    <li>${num((cases.positives || 0) + (cases.controls || 0))} companies were
+      set aside: ${num(cases.positives)} that later deteriorated and
+      ${num(cases.controls)} that didn't.</li>
+    <li>At each date the detector saw only what had been filed by then.</li>
+    <li>The goals were written down first, and the test ran once, on
+      ${date(data.scored_on || v.scored_on)}.</li>
+  </ol>
+  <p class="note">“Deteriorated” means two or more of these within a year:
+    sales growth falling sharply, gross margin dropping 5 points, operating
+    cash flow halving, a write-down of 5% of assets, or restated results.</p>`;
+
+  const rows = `<div class="panel"><div class="table-wrap"><table>
+  <thead><tr><th>Measure</th><th class="r">Result</th><th class="r">Goal</th><th class="r">Met</th></tr></thead>
+  <tbody>${checks.map((c) => `<tr>
+    <td>${esc(c.name)}<span class="sub">${esc(c.explain)}</span></td>
+    <td class="r num">${esc(c.result)}</td>
+    <td class="r num muted">${esc(c.required)}</td>
+    <td class="r">${c.passed ? pill("Yes") : pill("No", "danger")}</td>
+  </tr>`).join("")}</tbody></table></div></div>`;
+
+  const technical = `<div class="panel"><details class="more first">
+    <summary>Technical Details</summary><div class="panel-body">
+    <div class="cmd"><span>$</span>ledgerline reproduce</div>
+    <p class="note">Re-runs the code that scored the test and checks every
+      number on this page. The full write-up is in
+      <code>${esc(data.writeup || "reports/PHASE0.md")}</code>.</p>
     <dl class="facts">
-      <div><dt>Rules, SHA-256</dt><dd class="hash">${esc(fp.decision_rule || "—")}</dd></div>
-      <div><dt>Test data, SHA-256</dt><dd class="hash">${esc(fp.split || "—")}</dd></div>
-    </dl>`;
+      ${set ? `<div><dt>New Methods Must Register By</dt><dd>${date(set.registration_closes)}</dd></div>
+      <div><dt>Their First Results</dt><dd>${date(set.earliest_scoreable)}</dd></div>` : ""}
+      <div><dt>Goals, SHA-256</dt><dd class="hash">${esc(fp.decision_rule || "—")}</dd></div>
+      <div><dt>Test Data, SHA-256</dt><dd class="hash">${esc(fp.split || "—")}</dd></div>
+    </dl></div></details></div>`;
 
-  let next;
-  if (reg.error) {
-    next = `<div class="panel"><p class="panel-empty">Can't read the registry: ${esc(reg.error)}</p></div>`;
-  } else {
-    const set = list(reg.reserved)[0];
-    next = (set ? stats([
-      { label: "Registration closes", value: date(set.registration_closes), tone: "warn",
-        sub: `Reserved set ${esc(set.name)}, ${num(set.n_companies)} companies` },
-      { label: "First results", value: date(set.earliest_scoreable),
-        sub: `${num(set.n_checkpoints)} checkpoints to ${date(set.last_checkpoint)}` },
-      reg.alpha ? { label: "Error budget used", value: pct(reg.alpha.spent),
-        sub: `of ${pct(reg.alpha.budget)}, shared by every hypothesis` } : null,
-    ]) : "") +
-    `<div class="panel spaced"><div class="table-wrap"><table>
-      <thead><tr><th>Hypothesis</th><th>Status</th><th>Result</th><th>Commit</th></tr></thead>
-      <tbody>${list(reg.hypotheses).map((h) => `<tr>
-        <td><span class="mono">${esc(h.id)}</span> ${esc(h.name || "")}</td>
-        <td>${esc(h.status || "—")}</td>
-        <td>${h.verdict === "KILL" ? pill("Failed", "danger")
-          : h.verdict ? esc(h.verdict) : '<span class="muted">Not scored</span>'}</td>
-        <td class="acc">${esc(h.commit || "")}</td></tr>`).join("")}</tbody>
-    </table></div></div>
-    <p class="note">New idea: <code>ledgerline hypothesis new</code>, commit it,
-      then <code>ledgerline hypothesis register</code>.</p>`;
-  }
-
-  const body = head("The test",
-    `Scored once on ${date(data.scored_on || v.scored_on)}, on companies it had never seen.`) +
-    hero +
-    section({ title: "The six checks", sub: "Written down before the test. Missing any one was a fail.",
+  const body = head("Accuracy", "How far to trust a flag.") + strip +
+    section({ title: "What This Means", body: meaning }) +
+    section({ title: "How It Was Tested", body: steps }) +
+    section({ title: "Results", sub: "It had to meet all six goals.",
       body: rows }) +
-    section({ title: "Other numbers", body: numbers }) +
-    section({ title: "Market eras",
-      sub: list(data.regimes).every((r) => r.caught)
-        ? "It caught at least one case early in each." : "",
-      body: eras }) +
-    section({ title: "Check it yourself", body: repro }) +
-    section({ title: "What's next", body: next });
-  return layout({
-    title: "The test", current: "/verdict",
-    validation: v, body, generated: data.generated,
-  });
+    `<div class="section">${technical}</div>`;
+  return layout({ title: "Accuracy", current: "/verdict", validation: v, body });
 }

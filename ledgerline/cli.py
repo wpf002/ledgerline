@@ -578,7 +578,12 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                                             "a fixed number of days. The "
                                             "scheduled scan uses this so a "
                                             "machine that was asleep loses "
-                                            "nothing.")):
+                                            "nothing."),
+         publish_after: bool = typer.Option(False, "--publish",
+                                            help="Rewrite the files the local "
+                                                 "viewer reads when the scan "
+                                                 "finishes, so the pages show "
+                                                 "what it found.")):
     """Read the SEC's daily filing list and keep watched companies up to date.
 
     One request fetches every filing accepted market-wide that day. Companies
@@ -595,7 +600,7 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
         typer.echo("  ledgerline scan --score --narrate")
         raise typer.Exit(1)
     picked = _group_or_exit(group) if group else None
-    if catch_up:
+    if catch_up is True:
         days_back = ingest.catch_up_days()
         typer.echo(f"Catching up: reading {days_back} days of SEC filing lists "
                    "since the last completed scan.")
@@ -612,6 +617,11 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
     out = ingest.scan(days_back=days_back, as_of=as_of, score=score,
                       refresh=refresh,
                       ciks=set(picked) if picked else None)
+    # `is True`, not truthiness: called as a plain function with the option
+    # left out, the default is typer's Option object, which is truthy. A test
+    # did exactly that and published its empty fixture over the live pages.
+    if publish_after is True:
+        _publish_pages()
     if not out["filers"]:
         if out["index_rows"] == 0 and date.today().weekday() >= 5:
             typer.echo("The SEC publishes no filing list at weekends or on "
@@ -678,6 +688,40 @@ def scan(days_back: int = typer.Option(1, help="How many days of SEC filing "
                    f"{c['restatements']} revised past "
                    f"figure{'s' if c['restatements'] != 1 else ''} recorded. "
                    "No assessment was made (use --score to assess).")
+
+
+def _publish_pages() -> None:
+    """Rewrite the feed and the viewer's files, saying one line about it."""
+    contract.export_jsonl(contract.FEED_PATH)
+    res = views.write_all()
+    typer.echo(f"Pages updated: {res['watched']} companies.")
+
+
+@app.command()
+def assess(group: str = typer.Option(None, help="Only assess the companies in "
+                                                "this group."),
+           publish_after: bool = typer.Option(True, "--publish/--no-publish",
+                                              help="Rewrite the viewer's pages "
+                                                   "afterwards. On by default.")):
+    """Assess every watched company now and save the results.
+
+    Uses the filing histories already downloaded, so it makes no requests and
+    takes about a minute for 1,500 companies. After this the nightly scan keeps
+    each company current as it files.
+    """
+    if not edgar.universe():
+        _no_watchlist_exit()
+    picked = _group_or_exit(group) if group else None
+    typer.echo(phase0.banner())
+    typer.echo("")
+    out = ingest.assess(ciks=set(picked) if picked else None)
+    c = out["counters"]
+    typer.echo(f"Assessed {c['scored']} companies; {c['gated_in']} flagged. "
+               f"{c['filers_done'] - c['scored']} couldn't be assessed"
+               + (f", {c['filers_failed']} couldn't be read" if c["filers_failed"] else "")
+               + ".")
+    if publish_after is True:
+        _publish_pages()
 
 
 @app.command()

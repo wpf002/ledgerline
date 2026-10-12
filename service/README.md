@@ -13,19 +13,19 @@ step. It listens on both loopback literals — `127.0.0.1:8787` and
 `[::1]:8787`, never off the machine — and redirects either of them to the one
 canonical address, **http://localhost:8787**, so the address bar always reads
 the same way. It reads what `ledgerline publish` wrote under `reports/feed/`:
-the JSONL signal feed, plus `watchlist.json`, `runs.json`, `verdict.json` and
-`companies/TICKER.json`.
+the JSONL signal feed, plus `overview.json`, `watchlist.json`, `runs.json`,
+`verdict.json` and `companies/TICKER.json`.
 
 Five pages, and the JSON routes they sit beside:
 
 | Route               | Returns                                                        |
 | ------------------- | -------------------------------------------------------------- |
-| `/`                 | the latest run: coverage, the chance-alone expectation, fires   |
-| `/watchlist`        | every watched company; filter by group, assessability, ticker   |
-| `/company`          | the company lookup form; `?ticker=` redirects to the path below |
+| `/`                 | who is flagged now, the latest reports, the track record        |
+| `/watchlist`        | every watched company, paged; filter by status or group, search, sort |
+| `/company`          | redirects to `/watchlist`; `?ticker=` redirects to the path below |
 | `/company/:ticker`  | one company: the plain reading, the thirteen measures, the filings behind each number, revisions, the provenance trail |
 | `/activity`         | the run log: when, what it cost, what it found, what it could not assess |
-| `/verdict`          | the detector's own test, check by check, and what can be tested next; the banner links here |
+| `/verdict`          | the Accuracy page: the backtest's results and how it was run; the banner links here |
 | `/style.css`        | the one stylesheet every page links                             |
 | `/signals`          | the feed, cursor-paged (`?since_seq=0&limit=100`), at most 1,000 records a page |
 | `/signals/:ticker`  | one company's records                                          |

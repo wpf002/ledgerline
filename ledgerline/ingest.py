@@ -307,6 +307,38 @@ def scan(days_back: int = 1, as_of: str | None = None, score: bool = False,
                 "results": results, "counters": asdict(c)}
 
 
+def assess(ciks: set[str] | None = None) -> dict:
+    """Assess every watched company from what's already downloaded, and save
+    the results as one run.
+
+    A scan only re-assesses the companies that filed that day, so a fresh
+    install, or one whose only saved assessments are backtest replays, has
+    nothing current to show. This reads the cache and makes no requests. A
+    company that can't be read is counted as failed and the rest carry on.
+    """
+    today = date.today().isoformat()
+    with run("assess", today) as (run_id, c):
+        uni = edgar.universe()
+        if ciks is not None:
+            uni = {k: v for k, v in uni.items() if k in ciks}
+        results: list[dict] = []
+        for cik, meta in sorted(uni.items(), key=lambda kv: kv[1]["ticker"] or ""):
+            try:
+                res = signals_v3.evaluate(meta["ticker"], cik, as_of=today)
+            except Exception:  # noqa: BLE001 -- one unreadable filer mustn't stop the run
+                c.filers_failed += 1
+                continue
+            results.append(res)
+            c.filers_done += 1
+            if res["scoreable"]:
+                c.scored += 1
+                c.gated_in += int(res["gated_in"])
+        if results:
+            emit.emit_run(results, source="score", run_id=run_id, run_date=today)
+        return {"run_id": run_id, "as_of": today, "results": results,
+                "counters": asdict(c)}
+
+
 def backfill(only: list[str] | None = None, refresh: bool = False,
              limit: int | None = None, resume: bool = True) -> dict:
     """Full-universe (or named-filer) pull, resuming from ingest_state.

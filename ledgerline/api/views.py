@@ -68,6 +68,41 @@ TIMELINE_LIMIT = 400
 TICKER_FILENAME = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,11}$")
 
 
+# The SEC stores many company names in capitals. These are the words that
+# aren't initialisms when a name arrives that way.
+_NAME_WORDS = {
+    "THE", "AND", "OF", "FOR", "IN", "ON", "AT", "DE", "LA", "DEL", "LAS", "LOS",
+    "SAN", "VAN", "VON", "NEW", "AIR", "GAS", "OIL", "ONE", "SUN", "BIG", "DOW",
+    "FOX", "GAP", "KEY", "BOX", "RED", "CAR", "PET", "NET", "WEB", "TOP", "BAY",
+    "SEA", "SKY", "INN", "ART", "INC", "CO", "LTD", "LLC", "PLC", "LP", "NV",
+    "SA", "AG", "CORP", "TR", "HLDG", "MFG", "INTL", "GRP", "CTR", "CP",
+}
+_NAME_LOWER = {"AND", "OF", "FOR", "IN", "ON", "AT", "DE", "LA", "DEL"}
+
+
+def display_name(name: str | None, ticker: str | None = None) -> str:
+    """A company name as a person would write it. `AGILENT TECHNOLOGIES, INC.`
+    reads as `Agilent Technologies, Inc.`; a name that already has lower case
+    is left alone. A short all-capitals word stays as it is (FMC, KLA, 3M)
+    unless it's an ordinary word or a corporate suffix."""
+    if not name or any(ch.islower() for ch in name):
+        return name or ""
+    out = []
+    for i, word in enumerate(name.split()):
+        core = word.strip(".,()")
+        keep = (not core or core == (ticker or "")
+                or any(ch.isdigit() or ch in "&/" for ch in core)
+                or (len(core) <= 3 and core not in _NAME_WORDS))
+        if keep:
+            out.append(word)
+        elif i and core in _NAME_LOWER:
+            out.append(word.lower())
+        else:
+            out.append(word.replace(core, "-".join(
+                w[:1] + w[1:].lower() for w in core.split("-"))))
+    return " ".join(out)
+
+
 def _plain_flags(flags: list[dict] | None) -> list[str]:
     return [render.PLAIN.get((f.get("code") or "").lower(),
                              (f.get("code") or "",))[0]
@@ -264,9 +299,20 @@ def watchlist(conn: sqlite3.Connection | None = None) -> dict:
             assessable = bool(ok)
             reason = None if ok else render.plain_reason(detail)
         n_figures = figures.get(cik, 0)
+        last = latest.get(cik)
+        # One word for where a row stands, so the page filters and counts on
+        # what the Python decided: flagged, clear (assessed, not flagged),
+        # unassessable (too little data), or pending (nothing saved yet).
+        if last and last["scoreable"]:
+            state = "flagged" if last["flagged"] else "clear"
+        elif last or assessable is False:
+            state = "unassessable"
+        else:
+            state = "pending"
         companies.append({
             "ticker": ticker,
-            "name": name,
+            "name": display_name(name, ticker),
+            "status": state,
             "cik": cik,
             "sic": sic,
             "groups": member.get(cik, []),
@@ -296,6 +342,8 @@ def watchlist(conn: sqlite3.Connection | None = None) -> dict:
         "n_checked": sum(1 for c in companies if c["assessable"] is not None),
         "n_flagged": sum(1 for c in companies
                          if (c["latest"] or {}).get("flagged")),
+        "counts": {k: sum(1 for c in companies if c["status"] == k)
+                   for k in ("flagged", "clear", "unassessable", "pending")},
         "groups": group_list,
         "companies": companies,
         "validation": contract.validation_block(),
@@ -339,6 +387,65 @@ def runs(limit: int = RUNS_LIMIT) -> dict:
     }
 
 
+# ------------------------------------------------------------------ overview
+
+# How many rows the front page carries of each list.
+OVERVIEW_FLAGGED = 25
+OVERVIEW_FILINGS = 12
+
+
+def overview(wl: dict | None = None) -> dict:
+    """The front page: who is flagged now, what watched companies filed
+    lately, and how fresh all of it is. Built from each company's newest saved
+    assessment, so it stays right when a nightly scan re-assesses only the
+    companies that filed."""
+    wl = wl or watchlist()
+    names = {c["cik"]: c["name"] for c in wl["companies"]}
+    flagged = sorted(
+        (c for c in wl["companies"] if c["status"] == "flagged"),
+        key=lambda c: -(c["latest"]["score"] or 0))
+    assessed = [c["latest"] for c in wl["companies"] if c["latest"]]
+    live = sum(1 for a in assessed if a.get("source") != "replay")
+    conn = edgar.db()
+    try:
+        # Quarterly and annual reports only: they're the filings that change
+        # a company's numbers, and current reports outnumber them ten to one.
+        forms = sorted(edgar.PERIODIC_FORMS)
+        filings = conn.execute(
+            "SELECT accession, cik, ticker, form, filing_date, period FROM filings "
+            f"WHERE form IN ({','.join('?' * len(forms))}) "
+            "ORDER BY filing_date DESC, accession DESC LIMIT ?",
+            (*forms, OVERVIEW_FILINGS)).fetchall()
+    finally:
+        conn.close()
+    scans = ingest.run_log(job="scan", limit=1)
+    return {
+        "generated": date.today().isoformat(),
+        "validation": contract.validation_block(),
+        "n_companies": wl["n_companies"],
+        "counts": wl["counts"],
+        "n_flagged_shown": min(len(flagged), OVERVIEW_FLAGGED),
+        "flagged": [{
+            "ticker": c["ticker"], "name": c["name"],
+            "score": c["latest"]["score"], "flags": c["latest"]["flags"],
+            "period": c["latest"]["period"], "as_of": c["latest"]["as_of"],
+            "source": c["latest"]["source"],
+        } for c in flagged[:OVERVIEW_FLAGGED]],
+        # Whether what's on the page is a current reading or a backtest
+        # replay. Replays once rendered as the latest run with nothing saying
+        # otherwise.
+        "assessed": {
+            "live": live, "replay": len(assessed) - live,
+            "newest": max((a["as_of"] for a in assessed), default=None),
+        },
+        "filings": [{
+            "accession": a, "cik": cik, "ticker": tick, "name": names.get(cik, ""),
+            "form": form, "filed": filed, "period": period,
+        } for a, cik, tick, form, filed, period in filings],
+        "last_scan": scans[0] if scans else None,
+    }
+
+
 # ------------------------------------------------------------------ the test
 
 # The six checks the Phase 0 decision rule named, in the order reports/PHASE0.md
@@ -346,18 +453,18 @@ def runs(limit: int = RUNS_LIMIT) -> dict:
 # these rows as written: a second wording of the rule in JavaScript would be a
 # second answer to "what did the test require".
 _CHECKS = (
-    ("false_positive_rate_per_quarter", "False alarms",
-     "Flags per quarter at companies that never deteriorated."),
-    ("median_lead_months", "Warning time",
-     "Months from its flag to the filing that showed the trouble."),
-    ("positive_hit_rate", "Deteriorations caught",
-     "Share of deteriorating companies it flagged in time."),
-    ("regime_coverage", "Market eras",
-     "Eras where it caught at least one case early."),
-    ("sample_size", "Sample size",
-     "Companies that deteriorated, and ones that didn't."),
-    ("beats_naive_baseline", "Beat a simple rule",
-     "Fewer false alarms than a two-line rule."),
+    ("positive_hit_rate", "Troubled Companies Caught",
+     "Companies that later deteriorated and were flagged beforehand."),
+    ("false_positive_rate_per_quarter", "False Alarms per Quarter",
+     "Flags at companies that never deteriorated."),
+    ("beats_naive_baseline", "Fewer False Alarms Than a Simple Rule",
+     "The simple rule flags any company burning cash while in debt."),
+    ("median_lead_months", "Warning Time",
+     "From the flag to the filing that showed the trouble."),
+    ("regime_coverage", "Different Market Periods",
+     "Periods from 2014 to 2025 in which it caught at least one case."),
+    ("sample_size", "Companies Tested",
+     "Ones that deteriorated, and ones that didn't."),
 )
 
 # The six market eras in plain words. universe.REGIMES carries the
@@ -398,24 +505,24 @@ def _check_row(key: str, check: dict) -> dict:
     v, lim = check["value"], check["limit"]
     meter = None
     if key == "false_positive_rate_per_quarter":
-        result, required = _pct(v, 2), f"at most {_pct(lim)}"
+        result, required = _pct(v, 2), f"At most {_pct(lim)}"
         meter = {"value": v, "limit": lim, "max": 0.06, "kind": "ceiling"}
     elif key == "median_lead_months":
-        result, required = f"{v} months", f"at least {lim} months"
+        result, required = f"{v} months", f"At least {lim} months"
         meter = {"value": v, "limit": lim, "max": 24, "kind": "floor"}
     elif key == "positive_hit_rate":
-        result, required = _pct(v), f"at least {_pct(lim)}"
+        result, required = _pct(v), f"At least {_pct(lim)}"
         meter = {"value": v, "limit": lim, "max": 1.0, "kind": "floor"}
     elif key == "regime_coverage":
         total = len(universe.REGIMES)
-        result, required = f"{v} of {total}", f"at least {lim}"
+        result, required = f"{v} of {total}", f"At least {lim}"
         meter = {"value": v, "limit": lim, "max": total, "kind": "floor"}
     elif key == "sample_size":
         result = f"{v['positives']} and {v['controls']}"
-        required = f"{lim['positives']} and {lim['controls']}"
+        required = f"At least {lim['positives']} and {lim['controls']}"
     else:  # beats_naive_baseline
         result = _pct(v, 2)
-        required = f"under {_pct(lim, 2)}"
+        required = f"Under {_pct(lim, 2)}"
         meter = {"value": v, "limit": lim, "max": 0.06, "kind": "ceiling"}
     name, explain = next((n, e) for k, n, e in _CHECKS if k == key)
     return {"key": key, "name": name, "explain": explain, "result": result,
@@ -761,7 +868,7 @@ def company(ticker: str, conn: sqlite3.Connection | None = None,
     return {
         "generated": date.today().isoformat(),
         "ticker": tick,
-        "name": name,
+        "name": display_name(name, tick),
         "cik": cik,
         "sic": sic,
         "groups": member,
@@ -858,6 +965,7 @@ def write_all(out_dir: str | None = None, companies: bool = True) -> dict:
         job_log = runs()
         _write(os.path.join(out_dir, "runs.json"), job_log, inside=out_dir)
         _write(os.path.join(out_dir, "verdict.json"), verdict(), inside=out_dir)
+        _write(os.path.join(out_dir, "overview.json"), overview(wl), inside=out_dir)
         written = 0
         dropped = 0
         refused: list[str] = []

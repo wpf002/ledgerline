@@ -59,7 +59,10 @@ def _python() -> str:
 def scan_job() -> Job:
     return Job(SCAN_LABEL, {
         "Label": SCAN_LABEL,
-        "ProgramArguments": [_python(), "-m", "ledgerline.cli", "scan", "--catch-up"],
+        # --score and --publish: each company that files is re-assessed and
+        # the pages are rewritten, so the viewer is current every morning.
+        "ProgramArguments": [_python(), "-m", "ledgerline.cli", "scan",
+                             "--catch-up", "--score", "--publish"],
         "WorkingDirectory": REPO,
         "StartCalendarInterval": [
             {"Weekday": d, "Hour": SCAN_HOUR, "Minute": SCAN_MINUTE} for d in WEEKDAYS

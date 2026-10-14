@@ -94,6 +94,11 @@ function plural(n, one, many) {
   return `${num(n)} ${n === 1 ? one : many}`;
 }
 
+// 0.287 reads as "3 in 10".
+function inTen(v) {
+  return `${Math.round(Number(v) * 10)} in 10`;
+}
+
 function clamp100(v) {
   return Math.max(0, Math.min(100, Number(v) || 0));
 }
@@ -197,9 +202,9 @@ export function banner(validation) {
   }
   const m = validation.measured || {};
   const words = validation.verdict === "KILL" && m.positive_hit_rate !== undefined
-    ? `<b>Accuracy Note</b><span>In testing, flags caught ${pct(m.positive_hit_rate)} ` +
-      "of the companies that later deteriorated. The goal was " +
-      `${pct(m.positive_hit_rate_floor)}.</span>`
+    ? `<b>Accuracy Note</b><span>In testing, flags caught about ${inTen(m.positive_hit_rate)} ` +
+      "companies before their trouble showed. The goal was " +
+      `${inTen(m.positive_hit_rate_floor)}.</span>`
     : `<b>${esc(validation.status)}</b><span>${esc(validation.statement)}</span>`;
   return `<div class="banner" role="note" data-status="${esc(validation.status)}">` +
     `${words}<a href="/verdict">How It Was Tested</a></div>`;
@@ -255,18 +260,17 @@ export function message({ title, current, validation, heading, paragraphs }) {
 // Rows per table on the front page.
 const OVERVIEW_ROWS = 10;
 
-// How far to trust a flag: the test's results against its goals.
+// How far to trust a flag, as counts a person can picture. The exact
+// figures and the goals' wording are on the Accuracy page.
 function trackRecord(track) {
-  const rows = list(track).filter((c) => c && c.meter);
+  const rows = list(track).filter((c) => c && c.big);
   if (!rows.length) return "";
   return section({ title: "Track Record",
     aside: '<a class="more-link" href="/verdict">How It Was Tested</a>',
     body: '<div class="goals">' + rows.map((c) =>
-      `<div class="goal" title="${esc(c.explain)}">` +
-      `<div class="stat-label">${esc(c.name)}</div>` +
-      `<div class="goal-row"><span class="goal-value${c.passed ? "" : " danger"}">` +
-      `${esc(c.result)}</span><span class="muted">${esc(c.required)}</span></div>` +
-      `${goalMeter(c)}</div>`).join("") + "</div>" });
+      `<div class="goal" title="${esc(c.name)}: ${esc(c.result)}">` +
+      `<div class="goal-value${c.passed ? "" : " danger"}">${esc(c.big)}</div>` +
+      `<p class="goal-says">${esc(c.says)}</p></div>`).join("") + "</div>" });
 }
 
 // Whether the page is showing current readings or backtest replays. A replay

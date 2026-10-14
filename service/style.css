@@ -266,9 +266,9 @@ nav.pages a[aria-current=page] { background: var(--accent-subtle); color: var(--
   border-radius: 8px;
   overflow: hidden;
 }
-.goal { min-width: 0; padding: 16px 24px 24px; background: var(--bg); }
-.goal-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 4px 0 16px; font-size: 14px; }
-.goal-value { font-size: 20px; line-height: 1.2; font-weight: 500; font-variant-numeric: tabular-nums; }
+.goal { min-width: 0; padding: 24px; background: var(--bg); cursor: default; }
+.goal-value { font-size: 32px; line-height: 1.2; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.goal-says { margin-top: 8px; color: var(--text-muted); font-size: 14px; line-height: 1.5; }
 .goal-value.danger { color: var(--danger); }
 
 /* ----------------------------------------------------------------- panels */

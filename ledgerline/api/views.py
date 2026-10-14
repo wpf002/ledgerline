@@ -435,7 +435,7 @@ def overview(wl: dict | None = None) -> dict:
         "validation": contract.validation_block(),
         # The test's goals the front page shows against their results, rows
         # the same as the Accuracy page's.
-        "track": [_check_row(k, record["checks"][k]) for k in _TRACK
+        "track": [_track_row(k, record["checks"][k]) for k in _TRACK
                   if k in record["checks"]],
         "n_companies": wl["n_companies"],
         "counts": wl["counts"],
@@ -467,6 +467,32 @@ def overview(wl: dict | None = None) -> dict:
 # a false alarm, and how much warning it gave.
 _TRACK = ("positive_hit_rate", "false_positive_rate_per_quarter",
           "median_lead_months")
+
+
+def _in(v: float, of: int) -> str:
+    """0.287 out of 10 reads as '3 in 10': a count a person can picture."""
+    return f"{round(v * of)} in {of}"
+
+
+def _track_row(key: str, check: dict) -> dict:
+    """A check as the front page says it: one number a person can picture
+    and the sentence that goes with it. The Accuracy page keeps the exact
+    figures."""
+    row = _check_row(key, check)
+    v, lim = check["value"], check["limit"]
+    if key == "positive_hit_rate":
+        row["big"] = _in(v, 10)
+        row["says"] = ("companies that later got into trouble were flagged "
+                       f"before it showed. The goal was {_in(lim, 10)}.")
+    elif key == "false_positive_rate_per_quarter":
+        row["big"] = _in(v, 100)
+        row["says"] = ("healthy companies are flagged by mistake each "
+                       f"quarter. The limit was {_in(lim, 100)}.")
+    else:  # median_lead_months
+        row["big"] = f"{v} months"
+        row["says"] = ("typical warning before the trouble showed in a "
+                       f"filing. The goal was {lim} months.")
+    return row
 
 # The six checks the Phase 0 decision rule named, in the order reports/PHASE0.md
 # lists them, each said the way a person would ask about it. The page renders

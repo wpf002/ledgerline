@@ -158,13 +158,14 @@ def banner_of(body: str) -> str:
 
 
 def carries_verdict(body: str) -> bool:
-    """The banner gives the frozen catch rate and the goal it missed, and
-    carries the status for programs that check for it."""
+    """The banner gives the frozen catch rate and the goal it missed, as
+    counts out of ten, and carries the status for programs that check for
+    it. The exact figures are on /verdict."""
     m = contract.validation_block()["measured"]
     b = banner_of(body)
     return ("Accuracy Note" in b
-            and f"{m['positive_hit_rate'] * 100:.1f}%" in b
-            and f"{m['positive_hit_rate_floor'] * 100:.0f}%" in b
+            and f"about {round(m['positive_hit_rate'] * 10)} in 10" in b
+            and f"goal was {round(m['positive_hit_rate_floor'] * 10)} in 10" in b
             and 'data-status="UNVALIDATED-KILL"' in b)
 
 

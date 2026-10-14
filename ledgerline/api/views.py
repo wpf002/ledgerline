@@ -41,7 +41,7 @@ import re
 import sqlite3
 from datetime import date
 
-from .. import edgar, groups, ingest, render, universe
+from .. import edgar, groups, ingest, render, schedule, universe
 from . import contract
 
 FEED_DIR = os.path.dirname(contract.FEED_PATH)
@@ -383,6 +383,15 @@ def runs(limit: int = RUNS_LIMIT) -> dict:
     return {
         "generated": date.today().isoformat(),
         "runs": log,
+        # When the nightly check runs. The page works out the next one when
+        # it's viewed, so it's never stale; launchd numbers weekdays from
+        # Sunday 0, the way JavaScript's getDay() does.
+        "schedule": {
+            "installed": os.path.exists(
+                os.path.join(schedule.AGENTS, f"{schedule.SCAN_LABEL}.plist")),
+            "weekdays": list(schedule.WEEKDAYS),
+            "hour": schedule.SCAN_HOUR, "minute": schedule.SCAN_MINUTE,
+        },
         "validation": contract.validation_block(),
     }
 
@@ -419,9 +428,15 @@ def overview(wl: dict | None = None) -> dict:
     finally:
         conn.close()
     scans = ingest.run_log(job="scan", limit=1)
+    from .. import status
+    record = status.load()
     return {
         "generated": date.today().isoformat(),
         "validation": contract.validation_block(),
+        # The test's goals the front page shows against their results, rows
+        # the same as the Accuracy page's.
+        "track": [_check_row(k, record["checks"][k]) for k in _TRACK
+                  if k in record["checks"]],
         "n_companies": wl["n_companies"],
         "counts": wl["counts"],
         "n_flagged_shown": min(len(flagged), OVERVIEW_FLAGGED),
@@ -447,6 +462,11 @@ def overview(wl: dict | None = None) -> dict:
 
 
 # ------------------------------------------------------------------ the test
+
+# The checks the front page carries: how many it caught, how often it raised
+# a false alarm, and how much warning it gave.
+_TRACK = ("positive_hit_rate", "false_positive_rate_per_quarter",
+          "median_lead_months")
 
 # The six checks the Phase 0 decision rule named, in the order reports/PHASE0.md
 # lists them, each said the way a person would ask about it. The page renders

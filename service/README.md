@@ -24,7 +24,7 @@ Five pages, and the JSON routes they sit beside:
 | `/watchlist`        | every watched company, paged; filter by status or group, search, sort |
 | `/company`          | redirects to `/watchlist`; `?ticker=` redirects to the path below |
 | `/company/:ticker`  | one company: the plain reading, the thirteen measures, the filings behind each number, revisions, the provenance trail |
-| `/activity`         | the run log: when, what it cost, what it found, what it could not assess |
+| `/activity`         | the run log, 10 per page (`?page=`), and the next scheduled check |
 | `/verdict`          | the Accuracy page: the backtest's results and how it was run; the banner links here |
 | `/style.css`        | the one stylesheet every page links                             |
 | `/signals`          | the feed, cursor-paged (`?since_seq=0&limit=100`), at most 1,000 records a page |

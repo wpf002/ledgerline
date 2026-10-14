@@ -380,7 +380,7 @@ function serveCompany(res, raw) {
       "<code>ledgerline fetch</code>.");
 }
 
-function serveActivity(res) {
+function serveActivity(res, url) {
   const got = readView("runs.json");
   if (!got.ok) {
     if (got.missing) {
@@ -396,7 +396,8 @@ function serveActivity(res) {
     }));
     return;
   }
-  sendHtml(res, 200, pages.activity(got.data));
+  sendHtml(res, 200, pages.activity(got.data,
+    { page: url.searchParams.get("page") ?? "" }));
 }
 
 // The detector's own test, check by check: the page the banner links to.
@@ -477,7 +478,7 @@ function handle(req, res) {
     } else if (parts[0] === "watchlist" && parts.length === 1) {
       serveWatchlist(res, url);
     } else if (parts[0] === "activity" && parts.length === 1) {
-      serveActivity(res);
+      serveActivity(res, url);
     } else if (parts[0] === "verdict" && parts.length === 1) {
       serveVerdict(res);
     } else if (parts[0] === "company" && parts.length === 1) {

@@ -87,7 +87,7 @@ Four pages, all rendered on the server, none of them needing JavaScript:
 | `/` | who is flagged now, the latest quarterly and annual reports, and the detector's track record |
 | `/watchlist` | every watched company, fifty to a page; filter by status or group, search, sort by score |
 | `/company/TICKER` | one company: its score, the thirteen measures, the filings every number came from, anything later revised |
-| `/activity` | every check for new filings and what it found |
+| `/activity` | when the nightly check last ran and runs next, and what each run found, 10 per page |
 | `/verdict` | how accurate the flags were in the backtest, and how it was run |
 
 `ledgerline assess` assesses every watched company from what's already

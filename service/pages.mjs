@@ -118,12 +118,25 @@ function section({ id = "", title, sub = "", aside = "", body }) {
     `${sub ? `<p>${sub}</p>` : ""}</div>${aside}</div>${body}</section>`;
 }
 
+// A label and a number. Anything more goes in the tooltip.
 function stats(items) {
   return '<div class="stats">' + items.filter(Boolean).map((s) =>
-    `<div class="stat"><div class="stat-label">${s.label}</div>` +
-    `<div class="stat-value${s.tone ? ` ${s.tone}` : ""}">${s.value}</div>` +
-    `${s.sub ? `<div class="stat-sub">${s.sub}</div>` : ""}</div>`).join("") +
+    `<div class="stat"${s.title ? ` title="${esc(s.title)}"` : ""}>` +
+    `<div class="stat-label">${s.label}</div>` +
+    `<div class="stat-value${s.tone ? ` ${s.tone}` : ""}">${s.value}</div></div>`).join("") +
     "</div>";
+}
+
+// A result against its goal: the fill is the result, the mark is the goal.
+// Red when the goal was missed.
+function goalMeter(c) {
+  const m = c && c.meter;
+  if (!m || !Number(m.max)) return "";
+  const at = (v) => clamp100((Number(v) / Number(m.max)) * 100).toFixed(1);
+  return `<div class="meter${c.passed ? "" : " danger"}" role="img" ` +
+    `aria-label="${esc(c.result)}, needed ${esc(String(c.required).toLowerCase())}">` +
+    `<span class="meter-fill" style="width:${at(m.value)}%"></span>` +
+    `<span class="meter-mark" style="left:${at(m.limit)}%"></span></div>`;
 }
 
 function pill(text, tone = "") {
@@ -242,17 +255,18 @@ export function message({ title, current, validation, heading, paragraphs }) {
 // Rows per table on the front page.
 const OVERVIEW_ROWS = 10;
 
-// The two numbers that say how far to trust a flag.
-function trackRecord(validation) {
-  const m = (validation || {}).measured;
-  if (!m) return "";
-  return section({ title: "Track Record", sub: "From a one-time backtest.",
+// How far to trust a flag: the test's results against its goals.
+function trackRecord(track) {
+  const rows = list(track).filter((c) => c && c.meter);
+  if (!rows.length) return "";
+  return section({ title: "Track Record",
     aside: '<a class="more-link" href="/verdict">How It Was Tested</a>',
-    body: '<div class="panel panel-body facts-big">' +
-      `<div><b>${pct(m.positive_hit_rate)}</b><p>of companies that later ` +
-      `deteriorated were flagged in time. The goal was ${pct(m.positive_hit_rate_floor)}.</p></div>` +
-      `<div><b>${pct(m.fpr_per_filer)}</b><p>of healthy companies were ` +
-      "flagged at least once.</p></div></div>" });
+    body: '<div class="goals">' + rows.map((c) =>
+      `<div class="goal" title="${esc(c.explain)}">` +
+      `<div class="stat-label">${esc(c.name)}</div>` +
+      `<div class="goal-row"><span class="goal-value${c.passed ? "" : " danger"}">` +
+      `${esc(c.result)}</span><span class="muted">${esc(c.required)}</span></div>` +
+      `${goalMeter(c)}</div>`).join("") + "</div>" });
 }
 
 // Whether the page is showing current readings or backtest replays. A replay
@@ -284,11 +298,11 @@ export function overview(data) {
 
   const strip = stats([
     { label: "Flagged", value: num(counts.flagged), tone: counts.flagged ? "danger" : "",
-      sub: `of ${num((counts.flagged || 0) + (counts.clear || 0))} assessed` },
+      title: `${num(counts.flagged)} of ${num((counts.flagged || 0) + (counts.clear || 0))} assessed` },
     { label: "Not Flagged", value: num(counts.clear) },
-    { label: "Can't Assess", value: num(counts.unassessable), sub: "Too little data" },
+    { label: "Can't Assess", value: num(counts.unassessable), title: "Too little data" },
     scan && { label: "Last Check", value: esc(shortDate(scan.started_at)),
-      sub: plural(scan.universe_hits, "new filing", "new filings") },
+      title: `${clock(scan.started_at)}, ${plural(scan.universe_hits, "new filing", "new filings")}` },
   ]);
 
   // The front page shows the ten highest scores; the watchlist has them all.
@@ -325,7 +339,7 @@ export function overview(data) {
       aside: more, body: flaggedBody }) +
     section({ title: "Latest Reports", sub: "Quarterly and annual filings.",
       body: filingsBody }) +
-    trackRecord(data.validation);
+    trackRecord(data.track);
   return layout({ title: "Overview", current: "/", validation: data.validation, body });
 }
 
@@ -537,7 +551,7 @@ export function watchlist(data, f) {
     const count = `<span class="muted">${num(from)}–${num(from + shown.length - 1)} of ${num(rows.length)}</span>`;
     inner += `<div class="pager top">${count}${pager(page, pages, href)}</div>
     <div class="table-wrap"><table>
-    <thead><tr><th>${sortLink("ticker", "Company")}</th><th>${sortLink("score", "Score")}</th>
+    <thead><tr><th>${sortLink("ticker", "Company")}</th><th title="${SCORE_SCALE}">${sortLink("score", "Score")}</th>
       <th>Out of Line</th><th>Quarter Ended</th><th>Measures With Data</th></tr></thead>
     <tbody>${shown.map((c) => `<tr>
       ${coCell(c.ticker, c.name)}
@@ -557,9 +571,10 @@ export function watchlist(data, f) {
   return layout({ title: "Watchlist", current: "/watchlist", validation: data.validation, body });
 }
 
-const SCORE_NOTE = "A score compares a company with its own history, from 0 " +
-  "to 100. A score of 45 with two measures out of line is a flag. No flag " +
-  "doesn't mean the company is fine.";
+// One line under the table. What the scale is goes on the Score header.
+const SCORE_NOTE = "A score of 45 with two measures out of line is a flag. " +
+  "No flag doesn't mean the company is fine.";
+const SCORE_SCALE = "0 to 100, against the company's own history";
 
 // ------------------------------------------------------------------- company
 
@@ -811,8 +826,48 @@ export function company(page) {
 // ------------------------------------------------------------------ activity
 
 const JOB_NAMES = { scan: "Filing Check", assess: "Full Assessment", backfill: "Download" };
+export const RUNS_PAGE_SIZE = 10;
+const DAY_NAMES = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays",
+  "Fridays", "Saturdays"];
 
-export function activity(data) {
+// The next time launchd starts the nightly check, from the schedule the run
+// log publishes. launchd counts weekdays the way getDay() does, Sunday 0, and
+// also accepts 7 for Sunday.
+export function nextCheck(s, now = new Date()) {
+  const days = list(s && s.weekdays).map((d) => Number(d) % 7);
+  if (!s || !s.installed || !days.length) return null;
+  for (let i = 0; i < 8; i++) {
+    const at = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i,
+      Number(s.hour) || 0, Number(s.minute) || 0);
+    if (at > now && days.includes(at.getDay())) return at;
+  }
+  return null;
+}
+
+function cadence(s) {
+  const days = [...new Set(list(s.weekdays).map((d) => Number(d) % 7))].sort();
+  const time = clock(new Date(2000, 0, 1, Number(s.hour) || 0, Number(s.minute) || 0).toISOString());
+  if (days.length === 7) return `every night at ${time}`;
+  if (days.join() === "1,2,3,4,5") return `weeknights at ${time}`;
+  return `${days.map((d) => DAY_NAMES[d]).join(", ")} at ${time}`;
+}
+
+// "Oct 13, 9:32 PM", with the year only when it isn't this one.
+function when(iso) {
+  const d = new Date(String(iso ?? ""));
+  if (Number.isNaN(d.getTime())) return "—";
+  const day = d.getFullYear() === new Date().getFullYear() ? shortDate(iso) : date(iso);
+  return `${day}, ${clock(iso)}`;
+}
+
+function took(r) {
+  if (!r.started_at || !r.finished_at) return "—";
+  const secs = (new Date(r.finished_at) - new Date(r.started_at)) / 1000;
+  if (Number.isNaN(secs)) return "—";
+  return secs < 90 ? `${secs.toFixed(0)}s` : `${(secs / 60).toFixed(0)}m`;
+}
+
+export function activity(data, f = {}) {
   const runs = list(data.runs);
   if (!runs.length) {
     return layout({
@@ -821,41 +876,52 @@ export function activity(data) {
         "<p>Run <code>ledgerline fetch</code>, then <code>ledgerline scan</code>.</p></div>",
     });
   }
+  const sched = data.schedule || {};
+  const next = nextCheck(sched);
+  const sub = sched.installed
+    ? `Checks the SEC for new filings ${cadence(sched)}.`
+    : "Nightly checks are off. Run <code>ledgerline schedule install</code>.";
+
   const scans = runs.filter((r) => r.job === "scan");
   const last = scans[0];
+  const failed = last && last.status === "failed";
   const strip = last ? stats([
     { label: "Last Check", value: esc(shortDate(last.started_at)),
-      tone: last.status === "failed" ? "danger" : "",
-      sub: last.status === "failed" ? "Failed" : esc(clock(last.started_at)) },
-    { label: "New Filings", value: num(last.universe_hits),
-      sub: "From watched companies" },
+      tone: failed ? "danger" : "",
+      title: failed ? `Failed at ${clock(last.started_at)}` : clock(last.started_at) },
+    next && { label: "Next Check", value: esc(shortDate(next.toISOString())),
+      title: clock(next.toISOString()) },
+    { label: "New Filings", value: num(last.universe_hits), title: "From watched companies" },
     { label: "Companies Updated", value: num(last.filers_done) },
-    { label: "Revised Figures", value: num(last.restatements),
-      sub: "Past numbers that changed" },
   ]) : "";
   const chart = runHistory(scans);
-  const table = `<div class="panel"><div class="table-wrap"><table>
+
+  const pages = Math.max(1, Math.ceil(runs.length / RUNS_PAGE_SIZE));
+  const page = Math.min(Math.max(1, Number(f.page) || 1), pages);
+  const shown = runs.slice((page - 1) * RUNS_PAGE_SIZE, page * RUNS_PAGE_SIZE);
+  const from = (page - 1) * RUNS_PAGE_SIZE + 1;
+  const href = (p) => `/activity${query({ page: p > 1 ? p : "" })}`;
+  const dash = (v) => (v === null || v === undefined ? "—" : num(v));
+  const table = `<div class="panel"><div class="table-wrap"><table class="log">
   <thead><tr><th>When</th><th>What Ran</th><th class="r">New Filings</th>
-    <th class="r">Companies Updated</th><th class="r">Revised Figures</th>
-    <th class="r">Assessed</th><th class="r">Flagged</th><th class="r">Took</th></tr></thead>
-  <tbody>${runs.map((r) => {
-    const secs = (r.started_at && r.finished_at)
-      ? (new Date(r.finished_at) - new Date(r.started_at)) / 1000 : null;
-    const assessed = r.assessed === null || r.assessed === undefined ? null : r.assessed;
-    return `<tr>
-    <td class="num">${date(r.started_at)}<span class="sub">${esc(clock(r.started_at))}</span></td>
+    <th class="r" title="Past numbers that changed">Revised Figures</th>
+    <th class="r">Companies Updated</th><th class="r">Assessed</th>
+    <th class="r">Flagged</th><th class="r">Took</th></tr></thead>
+  <tbody>${shown.map((r) => `<tr>
+    <td class="num">${esc(when(r.started_at))}</td>
     <td>${esc(JOB_NAMES[r.job] || r.job)}${r.status === "failed"
-      ? ` ${pill("Failed", "danger")}<span class="sub">${esc(String(r.error || "").split("\n")[0])}</span>` : ""}</td>
+      ? ` <span title="${esc(String(r.error || "").split("\n")[0])}">${pill("Failed", "danger")}</span>` : ""}</td>
     <td class="r num">${r.job === "scan" ? num(r.universe_hits) : "—"}</td>
-    <td class="r num">${r.job === "assess" ? "—" : num(r.filers_done)}</td>
     <td class="r num">${r.job === "assess" ? "—" : num(r.restatements)}</td>
-    <td class="r num">${assessed === null ? "—" : num(assessed)}</td>
-    <td class="r num">${assessed === null ? "—" : num(r.gated_in)}</td>
-    <td class="r num">${secs === null ? "—" : secs < 90 ? `${secs.toFixed(0)}s` : `${(secs / 60).toFixed(0)}m`}</td>
-  </tr>`;
-  }).join("")}</tbody>
-  </table></div></div>`;
-  const body = head("Activity", "Every check for new filings, newest first.") + strip +
+    <td class="r num">${r.job === "assess" ? "—" : num(r.filers_done)}</td>
+    <td class="r num">${dash(r.assessed)}</td>
+    <td class="r num">${r.assessed === null || r.assessed === undefined ? "—" : num(r.gated_in)}</td>
+    <td class="r num muted">${took(r)}</td>
+  </tr>`).join("")}</tbody>
+  </table></div>
+  ${pages > 1 ? `<div class="pager"><span class="muted">${num(from)}–${num(from + shown.length - 1)} of ${num(runs.length)}</span>${pager(page, pages, href)}</div>` : ""}</div>`;
+
+  const body = head("Activity", sub) + strip +
     (chart ? section({ title: "New Filings per Check",
       body: `<div class="panel panel-body">${chart}</div>` }) : "") +
     section({ title: "History", body: table });
@@ -867,6 +933,17 @@ export function activity(data) {
 // The page the banner links to. Every number and the wording of every row
 // come from verdict.json, which ledgerline/api/views.py writes from the
 // frozen test record.
+//
+// What counts as deteriorated, from ledgerline/label.py: any two of these
+// within four quarters.
+const DETERIORATED = [
+  "Sales growth falls 15 points below its usual pace",
+  "Gross margin falls 5 points",
+  "Operating cash flow halves or turns negative",
+  "A write-down of 5% of assets or more",
+  "Results restated",
+];
+
 export function verdict(data) {
   const v = data.validation || {};
   const m = v.measured || {};
@@ -874,64 +951,58 @@ export function verdict(data) {
   const cases = data.cases || {};
   const fp = data.fingerprints || {};
   const reg = data.registry || {};
-  const lead = checks.find((c) => c.key === "median_lead_months");
+  const base = data.baseline || {};
   const set = list(reg.reserved)[0];
+  const met = checks.filter((c) => c.passed).length;
+  const total = (cases.positives || 0) + (cases.controls || 0);
 
-  const strip = stats([
-    { label: "Troubled Companies Caught", value: pct(m.positive_hit_rate),
-      tone: "danger", sub: `Goal: ${pct(m.positive_hit_rate_floor)}` },
-    { label: "Healthy Companies Flagged", value: pct(m.fpr_per_filer),
-      sub: "At least once" },
-    lead && { label: "Typical Warning", value: esc(lead.result),
-      sub: "Before the trouble showed in a filing" },
-  ]);
-
-  const meaning = `<p class="lead">A flag is a reason to open the filings. It
-    isn't a prediction. In this test the detector missed
-    ${pct(1 - Number(m.positive_hit_rate))} of the companies that later
-    deteriorated, and flagged ${pct(m.fpr_per_filer)} of the healthy ones at
-    least once.</p>`;
-
-  const steps = `<ol class="steps">
-    <li>${num((cases.positives || 0) + (cases.controls || 0))} companies were
-      set aside: ${num(cases.positives)} that later deteriorated and
-      ${num(cases.controls)} that didn't.</li>
-    <li>At each date the detector saw only what had been filed by then.</li>
-    <li>The goals were written down first, and the test ran once, on
-      ${date(data.scored_on || v.scored_on)}.</li>
-  </ol>
-  <p class="note">“Deteriorated” means two or more of these within a year:
-    sales growth falling sharply, gross margin dropping 5 points, operating
-    cash flow halving, a write-down of 5% of assets, or restated results.</p>`;
-
-  const rows = `<div class="panel"><div class="table-wrap"><table>
-  <thead><tr><th>Measure</th><th class="r">Result</th><th class="r">Goal</th><th class="r">Met</th></tr></thead>
+  const results = `<div class="panel"><div class="table-wrap"><table class="results">
+  <thead><tr><th>Goal</th><th class="r">Result</th><th class="r">Needed</th>
+    <th class="meter-col"></th>
+    <th class="r">Met</th></tr></thead>
   <tbody>${checks.map((c) => `<tr>
-    <td>${esc(c.name)}<span class="sub">${esc(c.explain)}</span></td>
-    <td class="r num">${esc(c.result)}</td>
+    <td><span class="tip" title="${esc(c.explain)}">${esc(c.name)}</span></td>
+    <td class="r num result${c.passed ? "" : " danger"}">${esc(c.result)}</td>
     <td class="r num muted">${esc(c.required)}</td>
+    <td class="meter-col">${goalMeter(c)}</td>
     <td class="r">${c.passed ? pill("Yes") : pill("No", "danger")}</td>
   </tr>`).join("")}</tbody></table></div></div>`;
 
+  const fact = (label, value, title = "") =>
+    `<div${title ? ` title="${esc(title)}"` : ""}><dt>${label}</dt><dd class="num">${value}</dd></div>`;
+  const test = `<div class="panel panel-body"><dl class="facts flush">
+    ${fact("Later Deteriorated", num(cases.positives),
+      cases.censored ? `${num(cases.censored)} were already flagged at their first reading and aren't counted as caught or missed` : "")}
+    ${fact("Stayed Healthy", num(cases.controls))}
+    ${fact("Healthy Companies Ever Flagged", pct(m.fpr_per_filer),
+      "Flagged at least once across every quarter tested")}
+    ${fact("Simple Rule's False Alarms", pct(base.fpr, 2), base.rule || "")}
+    ${fact("Run Once", date(data.scored_on || v.scored_on))}
+  </dl></div>`;
+
+  const meaning = `<div class="panel panel-body"><ul class="marks">${DETERIORATED.map(
+    (x) => `<li>${x}</li>`).join("")}</ul></div>`;
+
   const technical = `<div class="panel"><details class="more first">
     <summary>Technical Details</summary><div class="panel-body">
-    <div class="cmd"><span>$</span>ledgerline reproduce</div>
-    <p class="note">Re-runs the code that scored the test and checks every
-      number on this page. The full write-up is in
-      <code>${esc(data.writeup || "reports/PHASE0.md")}</code>.</p>
+    <div class="cmd" title="Re-runs the test and checks every number on this page"><span>$</span>ledgerline reproduce</div>
     <dl class="facts">
+      <div><dt>Write-Up</dt><dd><code>${esc(data.writeup || "reports/PHASE0.md")}</code></dd></div>
       ${set ? `<div><dt>New Methods Must Register By</dt><dd>${date(set.registration_closes)}</dd></div>
       <div><dt>Their First Results</dt><dd>${date(set.earliest_scoreable)}</dd></div>` : ""}
       <div><dt>Goals, SHA-256</dt><dd class="hash">${esc(fp.decision_rule || "—")}</dd></div>
       <div><dt>Test Data, SHA-256</dt><dd class="hash">${esc(fp.split || "—")}</dd></div>
     </dl></div></details></div>`;
 
-  const body = head("Accuracy", "How far to trust a flag.") + strip +
+  const body = head("Accuracy", `Tested once on ${num(total)} companies it hadn't seen.`) +
+    section({ title: "Results",
+      aside: `<span class="muted">${num(met)} of ${num(checks.length)} Goals Met</span>`,
+      body: results }) +
     '<div class="section cols half">' +
-    section({ title: "What This Means", body: meaning }) +
-    section({ title: "How It Was Tested", body: steps }) + "</div>" +
-    section({ title: "Results", sub: "It had to meet all six goals.",
-      body: rows }) +
+    section({ title: "The Test", body: test }) +
+    section({ title: "Deteriorated Means",
+      aside: '<span class="muted">Any Two Within a Year</span>', body: meaning }) +
+    "</div>" +
     `<div class="section">${technical}</div>`;
   return layout({ title: "Accuracy", current: "/verdict", validation: v, body });
 }

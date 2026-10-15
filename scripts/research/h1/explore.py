@@ -1,5 +1,4 @@
 # ruff: noqa
-# Research scratch for the h1 search (docs/research/h1-search.md). Practice half only.
 """Scratch exploration, practice half only. Not part of the project."""
 import json, math, os, sys
 from collections import Counter, defaultdict
@@ -61,6 +60,14 @@ f4 = json.load(open(os.path.join(SP, "tuning_f4.json")))
 fy = defaultdict(list)
 for k, v in f4.items():
     if "float_yoy" in v: fy[(k.split("|")[1], v["float_end"][:4])].append(v["float_yoy"])
+f5 = json.load(open(os.path.join(SP, "tuning_f5.json")))
+QK = ("r1", "r3", "r6", "r12", "r1_x", "r3_x", "r6_x", "r12_x", "dd52", "vol3", "vol_ratio", "worst_day")
+qs = defaultdict(list)
+for t0, rs0 in by.items():
+    sec0 = (cases[t0].get("sector") or "00")[:2]
+    for r0 in rs0:
+        v = f5.get(f"{t0}|{r0['a']}", {})
+        if "r6_x" in v: qs[(r0["a"], sec0)].append(v["r6_x"]); qs[(r0["a"], "ALL")].append(v["dd52"] if "dd52" in v else v["r6_x"])
 names = None; X = []; meta = []
 for t, rs in by.items():
     c = cases[t]; sec = (c.get("sector") or "00")[:2]
@@ -98,6 +105,10 @@ for t, rs in by.items():
         pa = cutoffs[cutoffs.index(r["a"]) - 1] if cutoffs.index(r["a"]) else None
         f["sm_d1_rev"] = f["sm_revenue_yoy"] - med(pa, sec, "revenue_yoy") if pa else nan
         f["mm_d1_rev"] = f["mm_revenue_yoy"] - med(pa, "ALL", "revenue_yoy") if pa else nan
+        q = f5.get(f"{t}|{r['a']}", {})
+        for k in QK: f["q_" + k] = q.get(k, nan)
+        pe = qs.get((r["a"], sec), [])
+        f["q_r6_sec"] = q["r6_x"] - float(np.median(pe)) if "r6_x" in q and len(pe) >= 5 else nan
         if names is None: names = list(f)
         if c["is_positive"] and c["broke_filed"]:
             m = months(r["a"], c["broke_filed"])
@@ -152,7 +163,8 @@ def trial(label, cols, y_train=None, seeds=(1, 2, 3), **kw):
 allc = list(names)
 noz = [c for c in allc if not c.startswith("z_") and c not in ("score", "nf", "nz2")]
 PRICE = [c for c in noz if c.startswith("p_")]
-core = [c for c in noz if not c.startswith(("x_", "p_"))]
+core = [c for c in noz if not c.startswith(("x_", "p_", "q_"))]
+QP = [c for c in noz if c.startswith("q_")]
 y12 = np.where(kind == 1, np.where(mwin <= 12, 1, -1), 0)
 kw = dict(depth=3, iters=120, lr=0.04); SEEDS = (1, 2, 3, 4, 5)
 def caught_at(oof, fa_target):
@@ -162,7 +174,7 @@ def caught_at(oof, fa_target):
         if k == 1: pos[t] = pos[t] or bool(fi)
     return sum(pos.values()) / len(pos)
 grid = (0.02, 0.04, 0.05, 0.06)
-for label, cols in (("core", core), ("core + reported market value", core + PRICE)):
+for label, cols in (("core", core), ("core + daily prices", core + QP), ("prices alone", QP)):
     res = np.array([[caught_at(oof_scores(cols, sd, y12, **kw), g) for g in grid] for sd in SEEDS])
     print(f"{label:32}" + "  ".join(f"@{g:.0%}: {c.mean():5.1%} ({c.min():.0%}-{c.max():.0%})" for g, c in zip(grid, res.T)), flush=True)
-print("coverage of float_yoy:", round(float(np.mean(~np.isnan(X[:, names.index('p_float_yoy')]))), 2))
+print("coverage of prices:", round(float(np.mean(~np.isnan(X[:, names.index('q_r6_x')]))), 3))

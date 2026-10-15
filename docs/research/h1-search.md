@@ -50,8 +50,25 @@ Predicting a break within 12 months worked better than 24.
   ratio to sales. 55.9% at 4%. It's one reading a year, published about eight
   months after it's measured.
 
-Daily stock prices are untested. Stooq, the source tried, serves a bot check
-to scripted downloads, so the file has to be fetched by hand.
+## Daily stock prices
+
+Tiingo end-of-day prices for the 471 practice companies and SPY, pulled once
+(`scripts/research/h1/fetch_prices.py`, free key, about 50 requests an hour).
+Features at each cutoff use closes on or before it: 1, 3, 6 and 12-month
+returns, each also against SPY, 6-month return against the sector median,
+drop from the 52-week high, 3-month volatility, its ratio to the year's, and
+the worst day in 3 months (`features5.py`). 99.3% of rows have prices.
+
+| Model, 5 seeds | @2% | @4% | @5% | @6% |
+|---|---|---|---|---|
+| core | 44.2% | 56.7% (53–61) | 60.3% | 63.9% |
+| core + daily prices | 47.7% | 63.7% (60–68) | 67.3% | 70.8% |
+| prices alone | 34.2% | 48.0% | 52.6% | 56.6% |
+
+Core + prices clears 60% at 4% on every seed. This is the practice half,
+after many feature sets were tried on it, so a fresh test will likely come in
+lower. Only the one-time test on companies never used can say whether it
+holds.
 
 ## Where it misses
 
